@@ -1,3 +1,36 @@
+# Dependencies
 node_modules/
+*/node_modules/
+
+# Python Virtual Environments
+venv/
+*/venv/
+new_venv/
+*/new_venv/
+.env
+*.env
+!.env.example
+
+# Python Cache & Bytecode
 __pycache__/
-*.pyc
+*/__pycache__/
+*.py[cod]
+*$py.class
+
+# Build and distribution
+dist/
+build/
+*.egg-info/
+
+# OS and IDE files
+.DS_Store
+.vscode/
+.idea/
+
+# Playwright artifacts
+test-results/
+playwright-report/
+
+# Logs
+*.log
+logs/
