@@ -1,0 +1,10 @@
+fastapi==0.110.0
+uvicorn==0.27.1
+pydantic==2.6.4
+playwright==1.42.0
+langchain==0.1.13
+langgraph==0.0.30
+python-dotenv==1.0.1
+openai==1.14.2
+langchain-openai
+langchain-groq

@@ -1,0 +1,69 @@
+Initializing Unnamed-UX Multimodal Agent Test Run...
+Targeting: https://example.com
+/Users/sejalgupta/Desktop/research/ux/Unnamed_backend/venv/lib/python3.10/site-packages/pydantic/v1/main.py:1019: RuntimeWarning: fields may not start with an underscore, ignoring "_pending_action"
+  warnings.warn(f'fields may not start with an underscore, ignoring "{f_name}"', RuntimeWarning)
+/Users/sejalgupta/Desktop/research/ux/Unnamed_backend/venv/lib/python3.10/site-packages/pydantic/v1/main.py:1019: RuntimeWarning: fields may not start with an underscore, ignoring "_pending_action"
+  warnings.warn(f'fields may not start with an underscore, ignoring "{f_name}"', RuntimeWarning)
+Navigating to https://example.com...
+
+--- Node Completed: capture_initial ---
+/Users/sejalgupta/Desktop/research/ux/Unnamed_backend/venv/lib/python3.10/site-packages/pydantic/v1/main.py:1019: RuntimeWarning: fields may not start with an underscore, ignoring "_pending_action"
+  warnings.warn(f'fields may not start with an underscore, ignoring "{f_name}"', RuntimeWarning)
+Agent is reasoning about the multimodal state...
+Agent failed to parse response: Error code: 429 - {'error': {'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.', 'type': 'insufficient_quota', 'param': None, 'code': 'insufficient_quota'}}
+Agent Thought: Simulated User: I will click on the 'text=Learn more' element to explore more about this site. (Quota fallback mode active: Error code: 429 - {'error': {'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.', 'type': 'insufficient_quota', 'param': None, 'code': 'insufficient_quota'}})
+Agent Action: {'type': 'click', 'selector': 'text=Learn more', 'value': None}
+
+--- Node Completed: agent_decision ---
+Pending Action: {'type': 'click', 'selector': 'text=Learn more', 'value': None}
+/Users/sejalgupta/Desktop/research/ux/Unnamed_backend/venv/lib/python3.10/site-packages/pydantic/v1/main.py:1019: RuntimeWarning: fields may not start with an underscore, ignoring "_pending_action"
+  warnings.warn(f'fields may not start with an underscore, ignoring "{f_name}"', RuntimeWarning)
+Executing action: {'type': 'click', 'selector': 'text=Learn more', 'value': None}
+
+--- Node Completed: execute_action ---
+Agent is reasoning about the multimodal state...
+Agent failed to parse response: Error code: 429 - {'error': {'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.', 'type': 'insufficient_quota', 'param': None, 'code': 'insufficient_quota'}}
+Agent Thought: Simulated User: I will click on the 'text=About' element to explore more about this site. (Quota fallback mode active: Error code: 429 - {'error': {'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.', 'type': 'insufficient_quota', 'param': None, 'code': 'insufficient_quota'}})
+Agent Action: {'type': 'click', 'selector': 'text=About', 'value': None}
+
+--- Node Completed: agent_decision ---
+Pending Action: {'type': 'click', 'selector': 'text=About', 'value': None}
+Executing action: {'type': 'click', 'selector': 'text=About', 'value': None}
+Error executing action: Timeout 30000ms exceeded.
+
+--- Node Completed: execute_action ---
+Agent is reasoning about the multimodal state...
+Agent failed to parse response: Error code: 429 - {'error': {'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.', 'type': 'insufficient_quota', 'param': None, 'code': 'insufficient_quota'}}
+Agent Thought: Simulated User: I will click on the 'text=Learn more' element to explore more about this site. (Quota fallback mode active: Error code: 429 - {'error': {'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.', 'type': 'insufficient_quota', 'param': None, 'code': 'insufficient_quota'}})
+Agent Action: {'type': 'click', 'selector': 'text=Learn more', 'value': None}
+
+--- Node Completed: agent_decision ---
+Pending Action: {'type': 'click', 'selector': 'text=Learn more', 'value': None}
+Executing action: {'type': 'click', 'selector': 'text=Learn more', 'value': None}
+
+--- Node Completed: execute_action ---
+Agent is reasoning about the multimodal state...
+Agent failed to parse response: Error code: 429 - {'error': {'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.', 'type': 'insufficient_quota', 'param': None, 'code': 'insufficient_quota'}}
+Agent Thought: Simulated User: I will click on the 'text=About' element to explore more about this site. (Quota fallback mode active: Error code: 429 - {'error': {'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.', 'type': 'insufficient_quota', 'param': None, 'code': 'insufficient_quota'}})
+Agent Action: {'type': 'click', 'selector': 'text=About', 'value': None}
+
+--- Node Completed: agent_decision ---
+Pending Action: {'type': 'click', 'selector': 'text=About', 'value': None}
+Executing action: {'type': 'click', 'selector': 'text=About', 'value': None}
+Error executing action: Timeout 30000ms exceeded.
+
+--- Node Completed: execute_action ---
+Agent is reasoning about the multimodal state...
+Agent failed to parse response: Error code: 429 - {'error': {'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.', 'type': 'insufficient_quota', 'param': None, 'code': 'insufficient_quota'}}
+Agent Thought: Simulated User: I have explored the page and accomplished the goal. (Quota fallback mode active: Error code: 429 - {'error': {'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.', 'type': 'insufficient_quota', 'param': None, 'code': 'insufficient_quota'}})
+Agent Action: {'type': 'complete', 'selector': None, 'value': None}
+
+--- Node Completed: agent_decision ---
+Pending Action: {'type': 'complete', 'selector': None, 'value': None}
+
+✅ Task Completed by Agent!
+
+--- Node Completed: __end__ ---
+Pending Action: {'type': 'complete', 'selector': None, 'value': None}
+
+✅ Task Completed by Agent!
