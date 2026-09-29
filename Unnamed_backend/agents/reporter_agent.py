@@ -11,7 +11,14 @@ import os
 from typing import Dict, Any
 from langchain_core.messages import HumanMessage
 
+from .json_utils import extract_json_object, log_raw_response
+
 logger = logging.getLogger("ux-reporter-agent")
+
+REQUIRED_REPORT_FIELDS = [
+    "executive_summary", "psychological_friction_analysis",
+    "key_recommendations", "markdown_report",
+]
 
 REPORTER_PROMPT = """\
 You are a professional UX report writer specialising in cognitive psychology and usability research.
@@ -85,16 +92,12 @@ class UXReporterAgent:
             )
             try:
                 response = self.llm.invoke([HumanMessage(content=prompt)])
-                content = response.content.strip()
-                if content.startswith("```"):
-                    content = content.split("```")[1]
-                    if content.startswith("json"):
-                        content = content[4:]
-                content = content.strip()
-                start, end = content.find("{"), content.rfind("}")
-                if start != -1 and end != -1:
-                    content = content[start:end + 1]
-                report = json.loads(content)
+                raw_content = response.content
+                log_raw_response(logger, "Reporter", raw_content)
+                report = extract_json_object(raw_content)
+                missing = [f for f in REQUIRED_REPORT_FIELDS if f not in report]
+                if missing:
+                    raise ValueError(f"Reporter JSON missing required fields: {missing}")
                 logger.info("Report generated successfully by LLM.")
                 self._save_markdown(report.get("markdown_report", ""), state)
                 return report

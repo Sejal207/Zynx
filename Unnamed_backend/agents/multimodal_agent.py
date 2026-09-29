@@ -3,7 +3,6 @@ import json
 import logging
 from typing import Dict, Any
 from langchain_core.messages import HumanMessage
-from langchain_openai import ChatOpenAI
 from langchain_groq import ChatGroq
 
 try:
@@ -12,6 +11,23 @@ except ImportError:
     from orchestrator.state import UXEvaluationState
 
 logger = logging.getLogger("ux-multimodal-agent")
+
+
+def _select_llm(model_name: str, max_tokens: int, groq_api_key: str, openai_api_key: str):
+    """Build a client for whichever provider has a key configured. Shared by
+    the navigator (short single-action decisions) and, via
+    build_analysis_llm(), the evaluator/reporter (which need a much larger
+    max_tokens budget since they return full structured reports, not a
+    one-line action)."""
+    if groq_api_key:
+        # NOTE: do NOT pass base_url here -- a stray GROQ_API_BASE pointing at
+        # .../openai/v1 makes the client double the path and 404. We let the
+        # SDK use its built-in default.
+        return ChatGroq(model=model_name, max_tokens=max_tokens, api_key=groq_api_key)
+    elif openai_api_key:
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(model="gpt-4o-mini", max_tokens=max_tokens, openai_api_key=openai_api_key)
+    return None
 
 
 class BaseMultimodalNavigatorAgent:
@@ -23,18 +39,27 @@ class BaseMultimodalNavigatorAgent:
         logger.info(f"GROQ_API_KEY present: {bool(groq_api_key)}")
         logger.info(f"OPENAI_API_KEY present: {bool(openai_api_key)}")
 
+        self._model_name = model_name
+        self._groq_api_key = groq_api_key
+        self._openai_api_key = openai_api_key
+
         if groq_api_key:
             logger.info(f"Using Groq provider with model: {model_name}")
-            # NOTE: do NOT pass base_url here -- a stray GROQ_API_BASE pointing at
-            # .../openai/v1 makes the client double the path and 404. We let the
-            # SDK use its built-in default.
-            self.llm = ChatGroq(model=model_name, max_tokens=800, api_key=groq_api_key)
         elif openai_api_key:
             logger.info("Using OpenAI provider with model: gpt-4o-mini")
-            self.llm = ChatOpenAI(model="gpt-4o-mini", max_tokens=800, openai_api_key=openai_api_key)
         else:
             logger.warning("No API key found! Operating in simulation mode.")
-            self.llm = None
+
+        # 800 tokens is enough for a single {"thought_trace", "action"} decision.
+        self.llm = _select_llm(model_name, 800, groq_api_key, openai_api_key)
+
+    def build_analysis_llm(self, max_tokens: int = 2500):
+        """A same-provider client with a larger token budget, for the
+        evaluator/reporter -- their JSON output (rationales, friction points,
+        a full markdown report) is far larger than a navigation decision and
+        was previously truncated when it shared the navigator's 800-token
+        client, which produced invalid/unterminated JSON."""
+        return _select_llm(self._model_name, max_tokens, self._groq_api_key, self._openai_api_key)
 
     # ----- simulation fallback (used only if the LLM is unavailable) ---------
     def _get_simulation_action(self, state: "UXEvaluationState", error_msg: str = None) -> Dict[str, Any]:

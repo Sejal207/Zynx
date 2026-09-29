@@ -10,7 +10,14 @@ import logging
 from typing import Dict, Any
 from langchain_core.messages import HumanMessage
 
+from .json_utils import extract_json_object, log_raw_response
+
 logger = logging.getLogger("ux-evaluator-agent")
+
+REQUIRED_EVAL_FIELDS = [
+    "effectiveness", "efficiency", "learnability", "cognitive_load",
+    "system1_system2_ratio", "overall_ux_score",
+]
 
 
 EVALUATOR_PROMPT = """\
@@ -164,16 +171,12 @@ class UXEvaluatorAgent:
 
         try:
             response = self.llm.invoke([HumanMessage(content=prompt)])
-            content = response.content.strip()
-            if content.startswith("```"):
-                content = content.split("```")[1]
-                if content.startswith("json"):
-                    content = content[4:]
-            content = content.strip()
-            start, end = content.find("{"), content.rfind("}")
-            if start != -1 and end != -1:
-                content = content[start:end + 1]
-            result = json.loads(content)
+            raw_content = response.content
+            log_raw_response(logger, "Evaluator", raw_content)
+            result = extract_json_object(raw_content)
+            missing = [f for f in REQUIRED_EVAL_FIELDS if f not in result]
+            if missing:
+                raise ValueError(f"Evaluator JSON missing required fields: {missing}")
             logger.info(f"Evaluation complete. Overall UX score: {result.get('overall_ux_score')}")
             return result
         except Exception as e:
