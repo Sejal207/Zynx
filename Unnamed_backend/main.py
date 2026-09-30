@@ -157,9 +157,19 @@ async def evaluate(request: EvaluationRequest):
 try:
     from .orchestrator import think_aloud
     from .tools import sarvam_stt
+    from .orchestrator.think_aloud_classifier import LLMThinkAloudClassifier, classify_result
+    from .orchestrator.runner import _analysis_llm as _think_aloud_classifier_llm
 except ImportError:
     from orchestrator import think_aloud
     from tools import sarvam_stt
+    from orchestrator.think_aloud_classifier import LLMThinkAloudClassifier, classify_result
+    from orchestrator.runner import _analysis_llm as _think_aloud_classifier_llm
+
+# Phase 3: reuses the exact same LLM client already configured for the
+# evaluator/reporter (agents/multimodal_agent.py's provider selection --
+# Groq if GROQ_API_KEY is set, else OpenAI, else None) -- no new provider,
+# no new API key, no second LLM client.
+_think_aloud_classifier = LLMThinkAloudClassifier(_think_aloud_classifier_llm)
 
 ta_logger = logging.getLogger("ux-think-aloud-api")
 
@@ -267,6 +277,20 @@ async def think_aloud_transcribe(
         f"Think-Aloud transcription complete for {session_id}: "
         f"{len(result['segments'])} segment(s), timing={result['timing_status']}, language={result['language']}"
     )
+
+    # Phase 3: classify each segment's explicit verbal UX content. Only runs
+    # on a successful transcript (never on raw audio, never if STT failed).
+    # classify_result() already catches exceptions internally, but this is
+    # wrapped again here defensively: classification is an enrichment layer
+    # and must NEVER be able to turn an already-successful transcription
+    # into a failed response.
+    try:
+        result = classify_result(result, _think_aloud_classifier)
+    except Exception:
+        ta_logger.exception(
+            f"Phase 3 classification crashed for session {session_id}; "
+            "returning the transcript unclassified rather than failing the request."
+        )
     return result
 
 

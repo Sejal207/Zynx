@@ -508,6 +508,12 @@ function ThinkAloudPanel({ url, setUrl, task, setTask, persona, setPersona }) {
                           Raw: {seg.raw_transcript}
                         </p>
                       )}
+                      {/* Phase 3: explicit UX classification -- visually secondary to the transcript itself. */}
+                      {seg.classification?.labels?.length > 0 && (
+                        <p className="form-hint" style={{marginTop: 8, letterSpacing: "1.5px"}}>
+                          {seg.classification.labels.join(" · ")} · {seg.classification.confidence?.toUpperCase()}
+                        </p>
+                      )}
                     </div>
                   ))}
                 </div>
