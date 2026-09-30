@@ -20,6 +20,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from .events import SessionClock, make_event
+from .transliteration import romanize
 
 logger = logging.getLogger("ux-think-aloud")
 
@@ -50,7 +51,7 @@ def new_session_id() -> str:
 # ------------------------------------------------------------ data model --
 
 def make_segment(
-    transcript: str,
+    raw_transcript: str,
     start_time_ms: Optional[float] = None,
     end_time_ms: Optional[float] = None,
     language: Optional[str] = None,
@@ -62,13 +63,28 @@ def make_segment(
     chunk timestamps, offset by the recording's own session-relative start
     time) -- never invented from a segment's position in the list. A segment
     with no real timing has start_time_ms/end_time_ms/duration_ms all None.
+
+    Two text representations are kept, per the research requirement that the
+    original Sarvam output must never be discarded or overwritten:
+      - raw_transcript: exactly what Sarvam returned, original script intact.
+      - display_transcript: the same words with any Devanagari script
+        converted to casual Roman/Latin (romanize() is a script conversion
+        only -- it never translates meaning, and leaves English/Latin text
+        byte-for-byte unchanged).
+    `transcript` is kept as an alias of display_transcript for backward
+    compatibility with existing frontend/consumer code that already reads
+    `segment.transcript` -- it is the field the UI shows and lets the user
+    edit; raw_transcript is untouched by that editing.
     """
     duration_ms = None
     if start_time_ms is not None and end_time_ms is not None:
         duration_ms = round(end_time_ms - start_time_ms, 1)
+    display_transcript = romanize(raw_transcript)
     return {
         "segment_id": new_segment_id(),
-        "transcript": transcript,
+        "transcript": display_transcript,
+        "raw_transcript": raw_transcript,
+        "display_transcript": display_transcript,
         "start_time_ms": start_time_ms,
         "end_time_ms": end_time_ms,
         "duration_ms": duration_ms,

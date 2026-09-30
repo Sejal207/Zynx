@@ -285,8 +285,13 @@ function ThinkAloudPanel({ url, setUrl, task, setTask, persona, setPersona }) {
   };
 
   const editSegmentText = (segmentId, newText) => {
-    setSegments((prev) => prev.map((s) => s.segment_id === segmentId ? { ...s, transcript: newText } : s));
+    // Only the displayed (Romanized) text is editable. raw_transcript --
+    // Sarvam's original, untouched output -- is never modified by this.
+    setSegments((prev) => prev.map((s) =>
+      s.segment_id === segmentId ? { ...s, display_transcript: newText, transcript: newText } : s
+    ));
   };
+  const [showRawTranscript, setShowRawTranscript] = useState(false);
 
   useEffect(() => () => { clearInterval(timerRef.current); streamRef.current?.getTracks().forEach((t) => t.stop()); }, []);
 
@@ -474,6 +479,10 @@ function ThinkAloudPanel({ url, setUrl, task, setTask, persona, setPersona }) {
                     {language || "unknown"} · {segments.length} segment{segments.length === 1 ? "" : "s"} · {timingStatus}
                   </span>
                 </div>
+                <label className="form-hint" style={{display: "flex", alignItems: "center", gap: 6, cursor: "pointer", marginBottom: 14}}>
+                  <input type="checkbox" checked={showRawTranscript} onChange={(e) => setShowRawTranscript(e.target.checked)} />
+                  Show raw transcript (original script, as returned by Sarvam)
+                </label>
                 <div className="friction-list">
                   {segments.map((seg) => (
                     <div key={seg.segment_id} className="friction-card">
@@ -485,14 +494,20 @@ function ThinkAloudPanel({ url, setUrl, task, setTask, persona, setPersona }) {
                         </span>
                         <span className="friction-type">{seg.language || "unknown"}</span>
                       </div>
+                      {/* Romanized display_transcript is the primary, editable text. */}
                       <textarea
                         className="textarea"
-                        value={seg.transcript}
+                        value={seg.display_transcript ?? seg.transcript}
                         onChange={(e) => editSegmentText(seg.segment_id, e.target.value)}
                         rows={2}
-                        lang={seg.language || undefined}
                         style={{fontSize: 13, lineHeight: 1.6, minHeight: 44}}
                       />
+                      {/* Optional, subtle raw-transcript view -- original script, read-only evidence. */}
+                      {showRawTranscript && seg.raw_transcript && (
+                        <p className="rec-detail" style={{marginTop: 6, opacity: 0.6}} lang={seg.language || undefined}>
+                          Raw: {seg.raw_transcript}
+                        </p>
+                      )}
                     </div>
                   ))}
                 </div>
