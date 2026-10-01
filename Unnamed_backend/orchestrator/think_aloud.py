@@ -16,6 +16,7 @@ event_type/source conventions as Phase 0 browser events, with source
 later phase without needing a different shape today.
 """
 import logging
+import re
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -28,6 +29,33 @@ logger = logging.getLogger("ux-think-aloud")
 TIMING_TIMED = "TIMED"       # every segment has real start/end timestamps
 TIMING_UNTIMED = "UNTIMED"   # STT returned text but no usable per-segment timing
 TIMING_INVALID = "INVALID"   # no usable transcript at all
+
+# ---- per-segment timing_source values ----------------------------------
+# Distinguishes a REAL Sarvam-provided timestamp from a timestamp merely
+# shared by several sentences that were split out of one larger Sarvam
+# chunk. Never conflate the two -- a "derived" segment's start/end are the
+# PARENT chunk's real range, not that sentence's own exact timing, which
+# Sarvam never provided and this module never invents.
+TIMING_SOURCE_ORIGINAL = "source"    # Sarvam's own timestamp, one sentence per chunk
+TIMING_SOURCE_DERIVED = "derived"    # sentence split from a larger timed chunk; shares its range
+TIMING_SOURCE_UNTIMED = "untimed"    # no usable timestamp at all
+
+# Best-effort sentence/phrase boundary: '.', '!', '?', or the Hindi danda/
+# double-danda ('।', '॥'), followed by whitespace. This is a heuristic, not a
+# linguistic sentence tokenizer -- it can over-split on abbreviations or
+# decimal numbers, which is an accepted, documented limitation for
+# think-aloud speech transcripts (rare in practice here).
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?।॥])\s+")
+
+
+def _split_into_sentences(text: str) -> List[str]:
+    """Split text into sentence/phrase units for evidence granularity only --
+    never used to invent timing. A single-sentence input returns a
+    single-item list unchanged."""
+    if not text:
+        return []
+    parts = _SENTENCE_SPLIT_RE.split(text.strip())
+    return [p.strip() for p in parts if p.strip()]
 
 # Think-Aloud-specific event types (kept local to this module -- Phase 0's
 # events.py EVENT_TYPES tuple for browser events is intentionally untouched).
@@ -56,6 +84,7 @@ def make_segment(
     end_time_ms: Optional[float] = None,
     language: Optional[str] = None,
     confidence: Optional[float] = None,
+    timing_source: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build one ThinkAloudSegment.
 
@@ -75,10 +104,22 @@ def make_segment(
     compatibility with existing frontend/consumer code that already reads
     `segment.transcript` -- it is the field the UI shows and lets the user
     edit; raw_transcript is untouched by that editing.
+
+    `timing_source` records WHERE start_time_ms/end_time_ms actually came
+    from -- TIMING_SOURCE_ORIGINAL (Sarvam's own timestamp for exactly this
+    text), TIMING_SOURCE_DERIVED (this text is one sentence split out of a
+    larger Sarvam chunk, and the timestamps shown are that PARENT chunk's
+    shared range, not this sentence's own exact timing), or
+    TIMING_SOURCE_UNTIMED (no usable timestamp at all). If not given
+    explicitly, it's inferred from whether real timestamps were passed, which
+    keeps existing callers (that never mention timing_source) working exactly
+    as before.
     """
     duration_ms = None
     if start_time_ms is not None and end_time_ms is not None:
         duration_ms = round(end_time_ms - start_time_ms, 1)
+    if timing_source is None:
+        timing_source = TIMING_SOURCE_ORIGINAL if duration_ms is not None else TIMING_SOURCE_UNTIMED
     display_transcript = romanize(raw_transcript)
     return {
         "segment_id": new_segment_id(),
@@ -88,6 +129,7 @@ def make_segment(
         "start_time_ms": start_time_ms,
         "end_time_ms": end_time_ms,
         "duration_ms": duration_ms,
+        "timing_source": timing_source,
         "language": language,      # None = genuinely unknown, never guessed
         "confidence": confidence,  # None = not provided by STT
         "source": "think_aloud",
@@ -173,11 +215,36 @@ def build_result_from_sarvam_response(
                 # A single malformed timestamp pair -- keep the text, drop timing
                 # for this segment only, rather than discarding it entirely.
                 s_ms = e_ms = None
-            segments.append(make_segment(text, s_ms, e_ms, language, confidence))
+
+            # Sarvam sometimes returns ONE chunk spanning many sentences (a
+            # whole 24s recording as a single "word"/timestamp pair). Split
+            # for evidence/classification granularity, but never pretend a
+            # split-out sentence has its own exact timestamp: every sentence
+            # derived from the same chunk shares that chunk's real [s_ms,
+            # e_ms] range and is explicitly flagged "derived", never "source".
+            sentences = _split_into_sentences(text)
+            if not sentences:
+                continue
+            if len(sentences) == 1:
+                timing_source = TIMING_SOURCE_ORIGINAL if s_ms is not None else TIMING_SOURCE_UNTIMED
+                segments.append(make_segment(sentences[0], s_ms, e_ms, language, confidence,
+                                              timing_source=timing_source))
+            else:
+                timing_source = TIMING_SOURCE_DERIVED if s_ms is not None else TIMING_SOURCE_UNTIMED
+                for sentence in sentences:
+                    segments.append(make_segment(sentence, s_ms, e_ms, language, confidence,
+                                                  timing_source=timing_source))
         timing_status = TIMING_TIMED if segments else TIMING_INVALID
     elif transcript:
-        # STT gave us text but no usable per-segment timestamps.
-        segments = [make_segment(transcript, None, None, language, confidence)]
+        # STT gave us text but no usable per-segment timestamps at all. Still
+        # split into sentences for evidence/classification granularity --
+        # timing stays None either way, so this never fabricates timing, it
+        # only improves which text unit each classification attaches to.
+        sentences = _split_into_sentences(transcript) or [transcript]
+        segments = [
+            make_segment(sentence, None, None, language, confidence, timing_source=TIMING_SOURCE_UNTIMED)
+            for sentence in sentences
+        ]
         timing_status = TIMING_UNTIMED
     else:
         segments = []

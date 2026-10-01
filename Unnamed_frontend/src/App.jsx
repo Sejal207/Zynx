@@ -94,6 +94,20 @@ function ThinkAloudPanel({ url, setUrl, task, setTask, persona, setPersona }) {
   const [timingStatus, setTimingStatus] = useState(null);
   const [language, setLanguage] = useState(null);
 
+  /* Human UX Evaluation Report state. taskOutcome/researcherNotes are
+     researcher input, kept purely as local component state (never sent to
+     the classifier, never persisted server-side -- there is no database).
+     humanReport is the deterministic score/findings/timeline returned by
+     POST /api/think-aloud/report; it is recomputed on demand, never on
+     every keystroke. */
+  const [taskOutcome, setTaskOutcome] = useState("not_assessed");
+  const [taskOutcomeNote, setTaskOutcomeNote] = useState("");
+  const [researcherNotes, setResearcherNotes] = useState("");
+  const [humanReport, setHumanReport] = useState(null);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [reportError, setReportError] = useState("");
+  const [expandedSignal, setExpandedSignal] = useState(null);
+
   const mediaRecorderRef = useRef(null);
   const chunksRef = useRef([]);
   const streamRef = useRef(null);
@@ -134,6 +148,12 @@ function ThinkAloudPanel({ url, setUrl, task, setTask, persona, setPersona }) {
     setTimingStatus(null);
     setLanguage(null);
     setWebsiteWindowClosed(false);
+    setTaskOutcome("not_assessed");
+    setTaskOutcomeNote("");
+    setResearcherNotes("");
+    setHumanReport(null);
+    setReportError("");
+    setExpandedSignal(null);
   };
 
   const startSession = async () => {
@@ -278,10 +298,48 @@ function ThinkAloudPanel({ url, setUrl, task, setTask, persona, setPersona }) {
       setTimingStatus(result.timing_status);
       setLanguage(result.language);
       setStage("completed");
+      generateReport(result.segments || [], "not_assessed");
     } catch (e) {
       setStage("error");
       setMicError(`Could not reach the transcription service: ${e.message}`);
     }
+  };
+
+  /* Builds the Human UX Evaluation Report: a deterministic Task UX Score +
+     findings + timeline, computed backend-side from the transcript segments
+     already on screen. Called once automatically after transcription, and
+     again whenever the researcher changes the Task Outcome -- never on every
+     researcher-notes keystroke (notes are local-only and never sent here). */
+  const generateReport = async (segmentsArg, outcomeArg) => {
+    setReportLoading(true);
+    setReportError("");
+    try {
+      const res = await fetch("/api/think-aloud/report", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          target_url: url,
+          task_description: task,
+          persona,
+          segments: segmentsArg,
+          audio_duration_ms: audioDurationMs,
+          language,
+          task_outcome: outcomeArg,
+        }),
+      });
+      const report = await res.json();
+      if (report.error) throw new Error(report.error);
+      setHumanReport(report);
+    } catch (e) {
+      setReportError(`Report generation failed: ${e.message}`);
+    } finally {
+      setReportLoading(false);
+    }
+  };
+
+  const handleTaskOutcomeChange = (newOutcome) => {
+    setTaskOutcome(newOutcome);
+    generateReport(segments, newOutcome);
   };
 
   const editSegmentText = (segmentId, newText) => {
@@ -472,6 +530,209 @@ function ThinkAloudPanel({ url, setUrl, task, setTask, persona, setPersona }) {
 
           {stage === "completed" && (
             <div className="report-content">
+
+              {/* 1. Report Header */}
+              <div className="overall-banner">
+                <div>
+                  <div className="overall-score-wrap">
+                    <span className="overall-score-num" style={{fontSize: 40}}>Human UX</span>
+                  </div>
+                  <div className="overall-score-label">Evaluation</div>
+                </div>
+                <div className="overall-meta">
+                  <div className="overall-url">{url.replace(/^https?:\/\//, "")}</div>
+                  <div className="overall-tags">
+                    {persona.persona_type && <span className="overall-tag">{persona.persona_type}</span>}
+                    <span className="overall-tag">{fmtMMSS((audioDurationMs || 0) / 1000)}</span>
+                    {language && <span className="overall-tag">{language}</span>}
+                    <span className="overall-tag">{segments.length} segment{segments.length === 1 ? "" : "s"}</span>
+                  </div>
+                </div>
+              </div>
+              <div className="report-block">
+                <p className="report-para">{task}</p>
+              </div>
+
+              {reportError && (
+                <div className="report-block">
+                  <p className="form-hint" style={{color: "#c85c6e"}}>{reportError}</p>
+                </div>
+              )}
+
+              {reportLoading && !humanReport && (
+                <div className="report-block">
+                  <div className="header-status" style={{fontSize: 11}}><span className="spinner" />Building report…</div>
+                </div>
+              )}
+
+              {/* Backward compatibility: an older result with no report data
+                  still shows the transcript below; the report sections simply
+                  don't render rather than crashing the page. */}
+              {humanReport && (<>
+
+                {/* 2 & 3. Task UX Score + Score Breakdown */}
+                <div className="report-block">
+                  <span className="report-block-num">01</span>
+                  <div className="report-block-title">
+                    <em>Task UX Score</em>
+                    <span className="report-block-title-en">This session only</span>
+                  </div>
+                  {humanReport.score.fully_assessed ? (
+                    <div className="overall-score-wrap" style={{marginBottom: 16}}>
+                      <span className="overall-score-num">{humanReport.score.total}</span>
+                      <span className="overall-score-denom">/ {humanReport.score.max}</span>
+                    </div>
+                  ) : (
+                    <div style={{marginBottom: 16}}>
+                      <span className="empty-title" style={{fontSize: 22}}>{humanReport.score.status}</span>
+                    </div>
+                  )}
+                  <p className="form-hint" style={{opacity: 0.8, marginBottom: 20, letterSpacing: "0.3px", textTransform: "none"}}>
+                    {humanReport.score.disclaimer}
+                  </p>
+                  <div className="stat-wall" style={{gridTemplateColumns: "1fr 1fr", border: "1px solid var(--cream-ghost)", borderRadius: "var(--radius-sm)"}}>
+                    {[
+                      ["Task Completion", humanReport.score.dimensions.task_completion],
+                      ["Verbal UX Signals", humanReport.score.dimensions.verbal_ux_signals],
+                      ["Recovery", humanReport.score.dimensions.recovery],
+                      ["Evidence Completeness", humanReport.score.dimensions.evidence_completeness],
+                    ].map(([label, dim]) => (
+                      <div key={label} className="stat-item">
+                        <span className="stat-label">{label}</span>
+                        <span className="stat-num" style={{fontSize: 20}}>
+                          {dim.score != null ? `${dim.score}/${dim.max}` : (dim.status || "Not fully assessed")}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 4. Session Summary */}
+                <div className="report-block">
+                  <span className="report-block-num">02</span>
+                  <div className="report-block-title"><em>Session Summary</em></div>
+                  <p className="report-para">{humanReport.summary}</p>
+                </div>
+
+                {/* 5. Key UX Findings */}
+                {humanReport.findings.length > 0 && (
+                  <div className="report-block">
+                    <span className="report-block-num">03</span>
+                    <div className="report-block-title">
+                      <em>Key UX Findings</em>
+                      <span className="report-block-title-en">{humanReport.findings.length} finding{humanReport.findings.length === 1 ? "" : "s"}</span>
+                    </div>
+                    <div className="rec-list">
+                      {humanReport.findings.map((f, i) => (
+                        <div key={f.segment_id || i} className="rec-item">
+                          <span className="rec-num">{String(i + 1).padStart(2, "0")}</span>
+                          <div className="rec-body">
+                            <div className="rec-title">{f.title}</div>
+                            <div className="rec-detail">"{f.evidence_text}"</div>
+                            <div className="form-hint" style={{marginTop: 4}}>
+                              {f.labels.join(" · ")}
+                              {f.start_time_ms != null && f.end_time_ms != null &&
+                                ` · ${fmtMMSS(f.start_time_ms / 1000)}–${fmtMMSS(f.end_time_ms / 1000)}`}
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* 6. Think-Aloud Signal Summary (expandable) */}
+                <div className="report-block">
+                  <span className="report-block-num">04</span>
+                  <div className="report-block-title"><em>Think-Aloud Signals</em></div>
+                  <div className="bias-grid">
+                    {Object.entries(humanReport.signal_summary).map(([label, info]) => (
+                      <div key={label}>
+                        <div className="bias-row" style={{cursor: info.count > 0 ? "pointer" : "default"}}
+                          onClick={() => info.count > 0 && setExpandedSignal(expandedSignal === label ? null : label)}>
+                          <span className="bias-key">{label.replace(/_/g, " ")}</span>
+                          <div className="bias-track"><div className="bias-fill" style={{width: `${Math.min(100, info.count * 20)}%`}} /></div>
+                          <span className="bias-val">{info.count}</span>
+                        </div>
+                        {expandedSignal === label && info.count > 0 && (
+                          <div style={{padding: "6px 0 10px 0"}}>
+                            {info.segment_ids.map((sid) => {
+                              const seg = segments.find((s) => s.segment_id === sid);
+                              if (!seg) return null;
+                              return (
+                                <p key={sid} className="rec-detail" style={{marginBottom: 4}}>
+                                  {seg.start_time_ms != null ? `${fmtMMSS(seg.start_time_ms / 1000)} · ` : ""}
+                                  "{seg.display_transcript}"
+                                </p>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 7. Evidence Timeline */}
+                {humanReport.timeline.length > 0 && (
+                  <div className="report-block">
+                    <span className="report-block-num">05</span>
+                    <div className="report-block-title">
+                      <em>Think-Aloud Evidence Timeline</em>
+                    </div>
+                    <div className="friction-list">
+                      {humanReport.timeline.map((t, i) => (
+                        <div key={t.segment_id || i} className="friction-card">
+                          <div className="friction-meta">
+                            <span className="friction-step-num">
+                              {t.start_time_ms != null && t.end_time_ms != null
+                                ? `${fmtMMSS(t.start_time_ms / 1000)} – ${fmtMMSS(t.end_time_ms / 1000)}`
+                                : "untimed"}
+                            </span>
+                            {/* "derived" means this timestamp is a shared range from a
+                                larger Sarvam chunk split into sentences -- not this
+                                sentence's own exact timing. Shown honestly, not hidden. */}
+                            {t.timing_source === "derived" && (
+                              <span className="friction-type" style={{opacity: 0.6}}>Derived segment</span>
+                            )}
+                            {t.labels.map((l) => <span key={l} className="friction-type">{l}</span>)}
+                          </div>
+                          <p className="friction-desc">"{t.text}"</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* 8. Expectation vs Experience */}
+                {Object.values(humanReport.expectation_experience).some(Boolean) && (
+                  <div className="report-block">
+                    <span className="report-block-num">06</span>
+                    <div className="report-block-title"><em>Expectation vs Experience</em></div>
+                    <div className="summary-two-col" style={{gridTemplateColumns: "1fr"}}>
+                      {[
+                        ["USER EXPECTATION", humanReport.expectation_experience.expectation],
+                        ["OBSERVED EXPERIENCE", humanReport.expectation_experience.observed_experience],
+                        ["WHAT HAPPENED NEXT", humanReport.expectation_experience.what_happened_next],
+                        ["CONFIRMATION", humanReport.expectation_experience.confirmation],
+                      ].filter(([, v]) => v).map(([label, v]) => (
+                        <div key={label} className="sum-col">
+                          <div className="sum-col-title">{label}</div>
+                          <div className="sum-item">
+                            <span className="sum-bullet">›</span>
+                            <span>
+                              "{v.text}"
+                              {v.start_time_ms != null && ` · ${fmtMMSS(v.start_time_ms / 1000)}`}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>)}
+
+              {/* 9. Full Think-Aloud Transcript (existing -- unchanged) */}
               <div className="report-block">
                 <div className="report-block-title">
                   <em>Think-Aloud Transcript</em>
@@ -492,6 +753,9 @@ function ThinkAloudPanel({ url, setUrl, task, setTask, persona, setPersona }) {
                             ? `${fmtMMSS(seg.start_time_ms / 1000)} – ${fmtMMSS(seg.end_time_ms / 1000)}`
                             : "untimed"}
                         </span>
+                        {seg.timing_source === "derived" && (
+                          <span className="friction-type" style={{opacity: 0.6}}>Derived segment</span>
+                        )}
                         <span className="friction-type">{seg.language || "unknown"}</span>
                       </div>
                       {/* Romanized display_transcript is the primary, editable text. */}
@@ -517,7 +781,43 @@ function ThinkAloudPanel({ url, setUrl, task, setTask, persona, setPersona }) {
                     </div>
                   ))}
                 </div>
-                <button className="tab" style={{marginTop: 16}} onClick={resetForRetry}>Record Again</button>
+              </div>
+
+              {/* 10. Task Outcome (researcher-controlled) */}
+              <div className="report-block">
+                <div className="report-block-title"><em>Task Outcome</em></div>
+                <div className="persona-grid" style={{marginBottom: 12}}>
+                  {[
+                    ["not_assessed", "Not Assessed"],
+                    ["completed", "Completed"],
+                    ["partially_completed", "Partially Completed"],
+                    ["not_completed", "Not Completed"],
+                  ].map(([value, label]) => (
+                    <button key={value} type="button"
+                      className={`persona-pill ${taskOutcome === value ? "active" : ""}`}
+                      onClick={() => handleTaskOutcomeChange(value)}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Task Outcome Note <span style={{color: "var(--steel-dim)"}}>optional, researcher input</span></label>
+                  <textarea className="textarea" rows={2} value={taskOutcomeNote}
+                    onChange={(e) => setTaskOutcomeNote(e.target.value)}
+                    placeholder="e.g. Participant found the relevant information after checking alternative navigation." />
+                </div>
+              </div>
+
+              {/* 11. Researcher Notes (local only, never sent anywhere) */}
+              <div className="report-block">
+                <div className="report-block-title"><em>Researcher Notes</em></div>
+                <textarea className="textarea" rows={3} value={researcherNotes}
+                  onChange={(e) => setResearcherNotes(e.target.value)}
+                  placeholder="Free-form notes for your own reference. Not sent to the classifier or any external service." />
+              </div>
+
+              <div className="report-block">
+                <button className="tab" onClick={resetForRetry}>Record Again</button>
               </div>
             </div>
           )}

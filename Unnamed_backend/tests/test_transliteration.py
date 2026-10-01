@@ -24,6 +24,44 @@ class RomanizeUnitTests(unittest.TestCase):
         text = "Mujhe laga quizzes Participate ke andar honge, but yahan nahi mil raha."
         self.assertEqual(romanize(text), text)
 
+    def test_regression_mixed_script_candra_o_no_longer_leaks_devanagari(self):
+        """Exact real-run bug report: 'information' respelled phonetically in
+        Devanagari (using the candra-O vowel sign U+0949, e.g. फॉर्म-style
+        loanwords) previously left the ॉ character untouched mid-word,
+        producing mixed-script output like 'inphaॉrmeshana'. No Devanagari
+        codepoint may appear anywhere in the output."""
+        variants = ["इन्फॉर्मेशन", "इन्फ़ॉर्मेशन", "इनफॉर्मेशन"]
+        for raw in variants:
+            result = romanize(raw)
+            devanagari_chars = [c for c in result if "ऀ" <= c <= "ॿ"]
+            self.assertEqual(devanagari_chars, [], f"leaked Devanagari chars in {result!r} from {raw!r}")
+
+    def test_information_resolves_to_clean_english_word(self):
+        for raw in ["इन्फॉर्मेशन", "इन्फ़ॉर्मेशन", "इनफॉर्मेशन", "इंफॉर्मेशन"]:
+            self.assertEqual(romanize(raw), "Information")
+
+    def test_candra_o_and_candra_e_matras_are_mapped(self):
+        # Standalone sanity check on the underlying character gap, independent
+        # of the ENGLISH_LOANWORDS dictionary entry for "information".
+        result = romanize("डॉक्टर")  # "doctor", uses candra-O matra
+        devanagari_chars = [c for c in result if "ऀ" <= c <= "ॿ"]
+        self.assertEqual(devanagari_chars, [])
+
+    def test_decomposed_nukta_form_matches_precomposed_form(self):
+        """फ़ (precomposed nukta consonant) and फ + combining nukta (U+093C,
+        decomposed form) must romanize to the same sound."""
+        precomposed = romanize("फ़ॉर्म")   # form, precomposed फ़
+        decomposed = romanize("फ़ॉर्म")  # form, फ + combining nukta
+        self.assertEqual(precomposed, decomposed)
+
+    def test_full_pricing_sentence_with_information_word(self):
+        """The specific sentence pattern from the real bug report."""
+        raw = "मुझे relevant इन्फॉर्मेशन नहीं मिल रही"
+        result = romanize(raw)
+        self.assertIn("information", result.lower())
+        devanagari_chars = [c for c in result if "ऀ" <= c <= "ॿ"]
+        self.assertEqual(devanagari_chars, [])
+
     def test_hindi_devanagari_becomes_romanized(self):
         raw = "मुझे तो यहीं पे प्राइसिंग सेक्शन ढूंढना था।"
         self.assertEqual(romanize(raw), "Mujhe to yahi pe pricing section dhoondhna tha.")

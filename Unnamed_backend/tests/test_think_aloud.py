@@ -94,6 +94,74 @@ class SarvamResponseParsingTests(unittest.TestCase):
         self.assertIsNone(result["segments"][0]["start_time_ms"])
         self.assertIsNone(result["segments"][0]["end_time_ms"])
 
+    def test_single_large_timed_chunk_with_multiple_sentences_is_split(self):
+        """Exact real-run scenario: Sarvam returned the ENTIRE 24s recording
+        as ONE timestamped chunk containing six sentences. Evidence
+        granularity must improve (multiple segments), but the timestamps
+        must never be invented per-sentence -- each derived segment shares
+        the parent chunk's real range and is explicitly flagged 'derived'."""
+        raw = {
+            "transcript": "ignored when per-chunk timestamps exist",
+            "language_code": "en-IN",
+            "timestamps": {
+                "words": [
+                    "Mujhe pricing section dhoondhna hai. Mujhe laga tha pricing "
+                    "navigation mein hogi. Haan mil gayi mujhe relevant information."
+                ],
+                "start_time_seconds": [0.0],
+                "end_time_seconds": [24.0],
+            },
+        }
+        result = think_aloud.build_result_from_sarvam_response(raw, "sess-big", recording_start_ms=0.0, audio_duration_ms=24000.0)
+        self.assertEqual(result["timing_status"], think_aloud.TIMING_TIMED)
+        self.assertEqual(len(result["segments"]), 3, "one large chunk with 3 sentences must split into 3 segments")
+        for seg in result["segments"]:
+            # No fabricated per-sentence timing: every derived segment shares
+            # the PARENT chunk's exact real range.
+            self.assertEqual(seg["start_time_ms"], 0.0)
+            self.assertEqual(seg["end_time_ms"], 24000.0)
+            self.assertEqual(seg["timing_source"], think_aloud.TIMING_SOURCE_DERIVED)
+        self.assertIn("dhoondhna", result["segments"][0]["display_transcript"].lower())
+        self.assertIn("navigation", result["segments"][1]["display_transcript"].lower())
+        self.assertIn("information", result["segments"][2]["display_transcript"].lower())
+
+    def test_single_sentence_chunk_keeps_source_timing_not_derived(self):
+        """A chunk that is ALREADY exactly one sentence must not be marked
+        'derived' -- its timestamp is Sarvam's own real source timing."""
+        raw = {
+            "transcript": "ignored",
+            "language_code": "en-IN",
+            "timestamps": {
+                "words": ["I am looking for the quizzes section."],
+                "start_time_seconds": [2.0],
+                "end_time_seconds": [5.0],
+            },
+        }
+        result = think_aloud.build_result_from_sarvam_response(raw, "sess-single", recording_start_ms=0.0, audio_duration_ms=5000.0)
+        self.assertEqual(len(result["segments"]), 1)
+        self.assertEqual(result["segments"][0]["timing_source"], think_aloud.TIMING_SOURCE_ORIGINAL)
+
+    def test_untimed_multi_sentence_transcript_still_split_for_evidence(self):
+        """No timestamps at all (Case C) -- segments stay untimed, but
+        splitting into sentences still improves evidence/classification
+        granularity; None start/end is never replaced with a guess."""
+        raw = {
+            "transcript": "Mujhe pricing chahiye. Yeh sahi jagah nahi hai.",
+            "language_code": "en-IN",
+        }
+        result = think_aloud.build_result_from_sarvam_response(raw, "sess-untimed", recording_start_ms=0.0, audio_duration_ms=None)
+        self.assertEqual(result["timing_status"], think_aloud.TIMING_UNTIMED)
+        self.assertEqual(len(result["segments"]), 2)
+        for seg in result["segments"]:
+            self.assertIsNone(seg["start_time_ms"])
+            self.assertIsNone(seg["end_time_ms"])
+            self.assertEqual(seg["timing_source"], think_aloud.TIMING_SOURCE_UNTIMED)
+
+    def test_single_sentence_untimed_transcript_not_over_split(self):
+        raw = {"transcript": "Mujhe laga quizzes yahan milenge.", "language_code": "hi-IN"}
+        result = think_aloud.build_result_from_sarvam_response(raw, "sess-single-untimed", 0.0, None)
+        self.assertEqual(len(result["segments"]), 1)
+
     def test_unknown_language_is_not_invented(self):
         raw = {"transcript": "hello", "language_code": "unknown"}
         result = think_aloud.build_result_from_sarvam_response(raw, "sess3", 0.0, None)

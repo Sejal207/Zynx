@@ -33,7 +33,7 @@ from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import json
 import uuid
 
@@ -159,11 +159,13 @@ try:
     from .tools import sarvam_stt
     from .orchestrator.think_aloud_classifier import LLMThinkAloudClassifier, classify_result
     from .orchestrator.runner import _analysis_llm as _think_aloud_classifier_llm
+    from .orchestrator import human_ux_report
 except ImportError:
     from orchestrator import think_aloud
     from tools import sarvam_stt
     from orchestrator.think_aloud_classifier import LLMThinkAloudClassifier, classify_result
     from orchestrator.runner import _analysis_llm as _think_aloud_classifier_llm
+    from orchestrator import human_ux_report
 
 # Phase 3: reuses the exact same LLM client already configured for the
 # evaluator/reporter (agents/multimodal_agent.py's provider selection --
@@ -309,6 +311,44 @@ async def think_aloud_get_session(session_id: str):
         "events": session["events"],
         "result": session["result"],
     }
+
+
+class HumanUXReportRequest(BaseModel):
+    """Report generation is a pure function of the data the frontend already
+    has from /transcribe -- no server-side session lookup needed, so the
+    frontend can regenerate the report (e.g. after the researcher changes
+    the task outcome) without re-running STT or classification."""
+    target_url: str
+    task_description: str = ""
+    persona: Optional[Dict[str, Any]] = None
+    segments: List[Dict[str, Any]] = []
+    audio_duration_ms: Optional[float] = None
+    language: Optional[str] = None
+    task_outcome: str = human_ux_report.DEFAULT_TASK_OUTCOME
+
+
+@app.post("/api/think-aloud/report")
+async def think_aloud_report(request: HumanUXReportRequest):
+    """Builds the Human UX Evaluation Report (deterministic Task UX Score +
+    signal summary + evidence timeline + findings + expectation-vs-experience
+    + an optional LLM prose summary). Uses ONLY data present in the Human
+    session result -- never Phase 1 autonomous-agent friction data, which
+    does not exist for a human-driven session."""
+    try:
+        report = human_ux_report.build_human_ux_report(
+            target_url=request.target_url,
+            task_description=request.task_description,
+            persona=request.persona,
+            segments=request.segments,
+            audio_duration_ms=request.audio_duration_ms,
+            language=request.language,
+            task_outcome=request.task_outcome,
+            llm=_think_aloud_classifier_llm,
+        )
+        return report
+    except Exception as e:
+        ta_logger.exception("Human UX report generation failed")
+        return {"error": f"Report generation failed: {e}"}
 
 
 if __name__ == "__main__":

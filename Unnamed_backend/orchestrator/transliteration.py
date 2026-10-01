@@ -90,6 +90,13 @@ ENGLISH_LOANWORDS = {
     "अपडेट": "update", "डाउनलोड": "download", "अपलोड": "upload",
     "नोटिफिकेशन": "notification", "पॉपअप": "popup", "बैनर": "banner",
     "लिंक": "link", "आइकॉन": "icon", "आइकन": "icon",
+    # Covers the exact real-run bug report: "information" phonetically
+    # respelled in Devanagari (with/without nukta on फ, with/without the
+    # conjunct-न vs bare-न spelling) previously left a stray untranslated
+    # ॉ character in the middle of otherwise-Romanized output.
+    "इन्फॉर्मेशन": "information", "इन्फ़ॉर्मेशन": "information",
+    "इनफॉर्मेशन": "information", "इंफॉर्मेशन": "information",
+    "रिलेवेंट": "relevant",
 }
 
 # ---- tier 3: character-level phonetic fallback -----------------------------
@@ -106,10 +113,17 @@ _CONSONANTS = {
 _INDEP_VOWELS = {
     "अ": "a", "आ": "aa", "इ": "i", "ई": "ee", "उ": "u", "ऊ": "oo",
     "ऋ": "ri", "ए": "e", "ऐ": "ai", "ओ": "o", "औ": "au",
+    # Candra-E/candra-O: used to write English loanword vowel sounds that
+    # don't exist natively in Hindi (e.g. the "o" in "office", "college").
+    # Missing these caused the exact reported bug: a word like "information"
+    # respelled phonetically in Devanagari left its ॉ/ॅ untouched mid-word,
+    # producing mixed-script output such as "inphaॉrmeshana".
+    "ऍ": "e", "ऑ": "o",
 }
 _MATRAS = {
     "ा": "a", "ि": "i", "ी": "i", "ु": "u", "ू": "oo",
     "ृ": "ri", "े": "e", "ै": "ai", "ो": "o", "ौ": "au",
+    "ॅ": "e", "ॉ": "o",  # candra-E/candra-O matras -- see _INDEP_VOWELS note above
 }
 _DANDA = {"।": ".", "॥": "."}
 _DIGITS = {d: str(i) for i, d in enumerate("०१२३४५६७८९")}
@@ -117,6 +131,13 @@ _HALANT = "्"
 _ANUSVARA = "ं"
 _CHANDRABINDU = "ँ"
 _VISARGA = "ः"
+_NUKTA = "़"
+# Base consonant + combining nukta (U+093C) is the DECOMPOSED form of the
+# precomposed nukta consonants already in _CONSONANTS (क़ ख़ ग़ ज़ ड़ ढ़ फ़ य़).
+# STT output can return either form; both must resolve to the same sound.
+_NUKTA_CONSONANTS = {
+    "क": "q", "ख": "kh", "ग": "g", "ज": "z", "ड": "r", "ढ": "rh", "फ": "f", "य": "y",
+}
 
 
 def _phonetic_transliterate(token: str) -> str:
@@ -132,6 +153,14 @@ def _phonetic_transliterate(token: str) -> str:
         nxt = token[i + 1] if i + 1 < n else ""
         if ch in _CONSONANTS:
             roman = _CONSONANTS[ch]
+            # Decomposed nukta form (base consonant + combining U+093C): use
+            # the nukta-variant sound and consume the nukta mark before
+            # continuing the normal matra/halant/anusvara checks below,
+            # exactly as if this were the precomposed nukta consonant.
+            if nxt == _NUKTA:
+                roman = _NUKTA_CONSONANTS.get(ch, roman)
+                i += 1
+                nxt = token[i + 1] if i + 1 < n else ""
             if nxt == _HALANT:
                 out.append(roman)
                 i += 2
