@@ -106,7 +106,7 @@ function ThinkAloudPanel({ url, setUrl, task, setTask, persona, setPersona }) {
   const [humanReport, setHumanReport] = useState(null);
   const [reportLoading, setReportLoading] = useState(false);
   const [reportError, setReportError] = useState("");
-  const [expandedSignal, setExpandedSignal] = useState(null);
+  const [showFullTranscript, setShowFullTranscript] = useState(false);
 
   const mediaRecorderRef = useRef(null);
   const chunksRef = useRef([]);
@@ -153,7 +153,7 @@ function ThinkAloudPanel({ url, setUrl, task, setTask, persona, setPersona }) {
     setResearcherNotes("");
     setHumanReport(null);
     setReportError("");
-    setExpandedSignal(null);
+    setShowFullTranscript(false);
   };
 
   const startSession = async () => {
@@ -570,7 +570,7 @@ function ThinkAloudPanel({ url, setUrl, task, setTask, persona, setPersona }) {
                   don't render rather than crashing the page. */}
               {humanReport && (<>
 
-                {/* 2 & 3. Task UX Score + Score Breakdown */}
+                {/* 2. Task UX Score -- unchanged formula, same four dimensions */}
                 <div className="report-block">
                   <span className="report-block-num">01</span>
                   <div className="report-block-title">
@@ -607,76 +607,28 @@ function ThinkAloudPanel({ url, setUrl, task, setTask, persona, setPersona }) {
                   </div>
                 </div>
 
-                {/* 4. Session Summary */}
+                {/* 3. Think-Aloud Signal Summary -- WHAT signals occurred, compact
+                    chips only. Evidence (WHEN + what was said) lives in the
+                    Timeline below, not duplicated here. */}
                 <div className="report-block">
                   <span className="report-block-num">02</span>
-                  <div className="report-block-title"><em>Session Summary</em></div>
-                  <p className="report-para">{humanReport.summary}</p>
-                </div>
-
-                {/* 5. Key UX Findings */}
-                {humanReport.findings.length > 0 && (
-                  <div className="report-block">
-                    <span className="report-block-num">03</span>
-                    <div className="report-block-title">
-                      <em>Key UX Findings</em>
-                      <span className="report-block-title-en">{humanReport.findings.length} finding{humanReport.findings.length === 1 ? "" : "s"}</span>
-                    </div>
-                    <div className="rec-list">
-                      {humanReport.findings.map((f, i) => (
-                        <div key={f.segment_id || i} className="rec-item">
-                          <span className="rec-num">{String(i + 1).padStart(2, "0")}</span>
-                          <div className="rec-body">
-                            <div className="rec-title">{f.title}</div>
-                            <div className="rec-detail">"{f.evidence_text}"</div>
-                            <div className="form-hint" style={{marginTop: 4}}>
-                              {f.labels.join(" · ")}
-                              {f.start_time_ms != null && f.end_time_ms != null &&
-                                ` · ${fmtMMSS(f.start_time_ms / 1000)}–${fmtMMSS(f.end_time_ms / 1000)}`}
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* 6. Think-Aloud Signal Summary (expandable) */}
-                <div className="report-block">
-                  <span className="report-block-num">04</span>
                   <div className="report-block-title"><em>Think-Aloud Signals</em></div>
                   <div className="bias-grid">
                     {Object.entries(humanReport.signal_summary).map(([label, info]) => (
-                      <div key={label}>
-                        <div className="bias-row" style={{cursor: info.count > 0 ? "pointer" : "default"}}
-                          onClick={() => info.count > 0 && setExpandedSignal(expandedSignal === label ? null : label)}>
-                          <span className="bias-key">{label.replace(/_/g, " ")}</span>
-                          <div className="bias-track"><div className="bias-fill" style={{width: `${Math.min(100, info.count * 20)}%`}} /></div>
-                          <span className="bias-val">{info.count}</span>
-                        </div>
-                        {expandedSignal === label && info.count > 0 && (
-                          <div style={{padding: "6px 0 10px 0"}}>
-                            {info.segment_ids.map((sid) => {
-                              const seg = segments.find((s) => s.segment_id === sid);
-                              if (!seg) return null;
-                              return (
-                                <p key={sid} className="rec-detail" style={{marginBottom: 4}}>
-                                  {seg.start_time_ms != null ? `${fmtMMSS(seg.start_time_ms / 1000)} · ` : ""}
-                                  "{seg.display_transcript}"
-                                </p>
-                              );
-                            })}
-                          </div>
-                        )}
+                      <div key={label} className="bias-row">
+                        <span className="bias-key">{label.replace(/_/g, " ")}</span>
+                        <div className="bias-track"><div className="bias-fill" style={{width: `${Math.min(100, info.count * 20)}%`}} /></div>
+                        <span className="bias-val">{info.count}</span>
                       </div>
                     ))}
                   </div>
                 </div>
 
-                {/* 7. Evidence Timeline */}
+                {/* 4. Evidence Timeline -- the main evidence section: WHEN each
+                    signal occurred and what was actually said. */}
                 {humanReport.timeline.length > 0 && (
                   <div className="report-block">
-                    <span className="report-block-num">05</span>
+                    <span className="report-block-num">03</span>
                     <div className="report-block-title">
                       <em>Think-Aloud Evidence Timeline</em>
                     </div>
@@ -704,86 +656,47 @@ function ThinkAloudPanel({ url, setUrl, task, setTask, persona, setPersona }) {
                   </div>
                 )}
 
-                {/* 8. Expectation vs Experience */}
-                {Object.values(humanReport.expectation_experience).some(Boolean) && (
+                {/* 5. UX Findings -- merged Session Summary (short lead-in) +
+                    the old "Key UX Findings" + "Expectation vs Experience"
+                    into ONE interpretation section. The per-segment list and
+                    the 4-slot narrative both repeated evidence already shown
+                    in the Timeline above; this keeps only the narrative
+                    reading (expectation -> difficulty -> recovery ->
+                    confirmation), each line a lead-in phrase plus the exact
+                    verbatim quote -- never a paraphrase, never invented. */}
+                {(humanReport.summary || Object.values(humanReport.expectation_experience).some(Boolean)) && (
                   <div className="report-block">
-                    <span className="report-block-num">06</span>
-                    <div className="report-block-title"><em>Expectation vs Experience</em></div>
-                    <div className="summary-two-col" style={{gridTemplateColumns: "1fr"}}>
-                      {[
-                        ["USER EXPECTATION", humanReport.expectation_experience.expectation],
-                        ["OBSERVED EXPERIENCE", humanReport.expectation_experience.observed_experience],
-                        ["WHAT HAPPENED NEXT", humanReport.expectation_experience.what_happened_next],
-                        ["CONFIRMATION", humanReport.expectation_experience.confirmation],
-                      ].filter(([, v]) => v).map(([label, v]) => (
-                        <div key={label} className="sum-col">
-                          <div className="sum-col-title">{label}</div>
-                          <div className="sum-item">
-                            <span className="sum-bullet">›</span>
-                            <span>
-                              "{v.text}"
-                              {v.start_time_ms != null && ` · ${fmtMMSS(v.start_time_ms / 1000)}`}
-                            </span>
+                    <span className="report-block-num">04</span>
+                    <div className="report-block-title"><em>UX Findings</em></div>
+                    {humanReport.summary && (
+                      <p className="report-para" style={{marginBottom: 18}}>{humanReport.summary}</p>
+                    )}
+                    {Object.values(humanReport.expectation_experience).some(Boolean) && (
+                      <div className="rec-list">
+                        {[
+                          ["EXPECTATION", "Participant expected", humanReport.expectation_experience.expectation],
+                          ["DIFFICULTY", "Participant reported", humanReport.expectation_experience.observed_experience],
+                          ["NAVIGATION / RECOVERY", "Participant considered", humanReport.expectation_experience.what_happened_next],
+                          ["CONFIRMATION", "Participant later confirmed", humanReport.expectation_experience.confirmation],
+                        ].filter(([, , v]) => v).map(([label, lead, v], i) => (
+                          <div key={label} className="rec-item">
+                            <span className="rec-num">{String(i + 1).padStart(2, "0")}</span>
+                            <div className="rec-body">
+                              <div className="rec-title">{label}</div>
+                              <div className="rec-detail">
+                                {lead}: "{v.text}"
+                                {v.start_time_ms != null && ` · ${fmtMMSS(v.start_time_ms / 1000)}`}
+                              </div>
+                            </div>
                           </div>
-                        </div>
-                      ))}
-                    </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
               </>)}
 
-              {/* 9. Full Think-Aloud Transcript (existing -- unchanged) */}
-              <div className="report-block">
-                <div className="report-block-title">
-                  <em>Think-Aloud Transcript</em>
-                  <span className="report-block-title-en">
-                    {language || "unknown"} · {segments.length} segment{segments.length === 1 ? "" : "s"} · {timingStatus}
-                  </span>
-                </div>
-                <label className="form-hint" style={{display: "flex", alignItems: "center", gap: 6, cursor: "pointer", marginBottom: 14}}>
-                  <input type="checkbox" checked={showRawTranscript} onChange={(e) => setShowRawTranscript(e.target.checked)} />
-                  Show raw transcript (original script, as returned by Sarvam)
-                </label>
-                <div className="friction-list">
-                  {segments.map((seg) => (
-                    <div key={seg.segment_id} className="friction-card">
-                      <div className="friction-meta">
-                        <span className="friction-step-num">
-                          {seg.start_time_ms != null && seg.end_time_ms != null
-                            ? `${fmtMMSS(seg.start_time_ms / 1000)} – ${fmtMMSS(seg.end_time_ms / 1000)}`
-                            : "untimed"}
-                        </span>
-                        {seg.timing_source === "derived" && (
-                          <span className="friction-type" style={{opacity: 0.6}}>Derived segment</span>
-                        )}
-                        <span className="friction-type">{seg.language || "unknown"}</span>
-                      </div>
-                      {/* Romanized display_transcript is the primary, editable text. */}
-                      <textarea
-                        className="textarea"
-                        value={seg.display_transcript ?? seg.transcript}
-                        onChange={(e) => editSegmentText(seg.segment_id, e.target.value)}
-                        rows={2}
-                        style={{fontSize: 13, lineHeight: 1.6, minHeight: 44}}
-                      />
-                      {/* Optional, subtle raw-transcript view -- original script, read-only evidence. */}
-                      {showRawTranscript && seg.raw_transcript && (
-                        <p className="rec-detail" style={{marginTop: 6, opacity: 0.6}} lang={seg.language || undefined}>
-                          Raw: {seg.raw_transcript}
-                        </p>
-                      )}
-                      {/* Phase 3: explicit UX classification -- visually secondary to the transcript itself. */}
-                      {seg.classification?.labels?.length > 0 && (
-                        <p className="form-hint" style={{marginTop: 8, letterSpacing: "1.5px"}}>
-                          {seg.classification.labels.join(" · ")} · {seg.classification.confidence?.toUpperCase()}
-                        </p>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* 10. Task Outcome (researcher-controlled) */}
+              {/* 6. Task Outcome (researcher-controlled) */}
               <div className="report-block">
                 <div className="report-block-title"><em>Task Outcome</em></div>
                 <div className="persona-grid" style={{marginBottom: 12}}>
@@ -808,12 +721,74 @@ function ThinkAloudPanel({ url, setUrl, task, setTask, persona, setPersona }) {
                 </div>
               </div>
 
-              {/* 11. Researcher Notes (local only, never sent anywhere) */}
+              {/* Researcher Notes (local only, never sent anywhere) */}
               <div className="report-block">
                 <div className="report-block-title"><em>Researcher Notes</em></div>
                 <textarea className="textarea" rows={3} value={researcherNotes}
                   onChange={(e) => setResearcherNotes(e.target.value)}
                   placeholder="Free-form notes for your own reference. Not sent to the classifier or any external service." />
+              </div>
+
+              {/* 7. Full Think-Aloud Transcript -- the underlying audit/evidence
+                  trail. Lowest visual priority (collapsed by default) since
+                  the Evidence Timeline above already surfaces every
+                  classified segment; this stays available in full for
+                  researchers who want to inspect everything, including
+                  un-classified segments and the raw-transcript toggle. */}
+              <div className="report-block">
+                <div className="report-block-title" style={{marginBottom: showFullTranscript ? 20 : 0}}>
+                  <em>Full Think-Aloud Transcript</em>
+                  <span className="report-block-title-en">
+                    {language || "unknown"} · {segments.length} segment{segments.length === 1 ? "" : "s"} · {timingStatus}
+                  </span>
+                </div>
+                <button className="tab" style={{marginBottom: showFullTranscript ? 14 : 0}}
+                  onClick={() => setShowFullTranscript(!showFullTranscript)}>
+                  {showFullTranscript ? "Hide full transcript ▴" : "Show full transcript ▾"}
+                </button>
+                {showFullTranscript && (<>
+                  <label className="form-hint" style={{display: "flex", alignItems: "center", gap: 6, cursor: "pointer", margin: "14px 0"}}>
+                    <input type="checkbox" checked={showRawTranscript} onChange={(e) => setShowRawTranscript(e.target.checked)} />
+                    Show raw transcript (original script, as returned by Sarvam)
+                  </label>
+                  <div className="friction-list">
+                    {segments.map((seg) => (
+                      <div key={seg.segment_id} className="friction-card">
+                        <div className="friction-meta">
+                          <span className="friction-step-num">
+                            {seg.start_time_ms != null && seg.end_time_ms != null
+                              ? `${fmtMMSS(seg.start_time_ms / 1000)} – ${fmtMMSS(seg.end_time_ms / 1000)}`
+                              : "untimed"}
+                          </span>
+                          {seg.timing_source === "derived" && (
+                            <span className="friction-type" style={{opacity: 0.6}}>Derived segment</span>
+                          )}
+                          <span className="friction-type">{seg.language || "unknown"}</span>
+                        </div>
+                        {/* Romanized display_transcript is the primary, editable text. */}
+                        <textarea
+                          className="textarea"
+                          value={seg.display_transcript ?? seg.transcript}
+                          onChange={(e) => editSegmentText(seg.segment_id, e.target.value)}
+                          rows={2}
+                          style={{fontSize: 13, lineHeight: 1.6, minHeight: 44}}
+                        />
+                        {/* Optional, subtle raw-transcript view -- original script, read-only evidence. */}
+                        {showRawTranscript && seg.raw_transcript && (
+                          <p className="rec-detail" style={{marginTop: 6, opacity: 0.6}} lang={seg.language || undefined}>
+                            Raw: {seg.raw_transcript}
+                          </p>
+                        )}
+                        {/* Phase 3: explicit UX classification -- visually secondary to the transcript itself. */}
+                        {seg.classification?.labels?.length > 0 && (
+                          <p className="form-hint" style={{marginTop: 8, letterSpacing: "1.5px"}}>
+                            {seg.classification.labels.join(" · ")} · {seg.classification.confidence?.toUpperCase()}
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </>)}
               </div>
 
               <div className="report-block">
