@@ -25,6 +25,7 @@
 - [Option 3: Running the Backend Orchestrator Test](#option-3-running-the-backend-orchestrator-test)
 - [Project Directory Structure](#project-directory-structure)
 - [UX Metrics & Scoring Explained](#ux-metrics--scoring-explained)
+  - [Human Think-Aloud — Task UX Score Methodology](#human-think-aloud--task-ux-score-methodology)
 - [Troubleshooting & FAQs](#troubleshooting--faqs)
 
 ---
@@ -263,6 +264,31 @@ Zynx measures usability across quantitative metrics and psychological dimensions
 | **Frustration Index** | 0 – 10 | Escalation score caused by broken links, unexpected shifts, or dead ends. |
 | **System 1 / System 2** | Ratio % | Balance between intuitive, rapid decisions (System 1) vs deliberate scrutiny (System 2). |
 | **Psychological Biases** | 0 – 10 | Indicators for F-Pattern scanning, Banner Blindness, Anchoring, and Confirmation bias. |
+
+The **Overall UX Score** (0–10) shown for an Autonomous Agent run is generated directly by the evaluator LLM as its own judgment call, alongside the four dimension scores above, in the same JSON response (`agents/evaluator_agent.py`). It is not computed from the dimension scores by any formula in this codebase — the model is simply asked to give an overall rating informed by everything else it scored. A Python-side fallback (`_heuristic_evaluation`, used only when no LLM is configured or the LLM call/parse fails) does compute it as the rounded average of the four heuristic dimension scores, but that is a fallback path, not the default behaviour.
+
+### Human Think-Aloud — Task UX Score Methodology
+
+The Human + Think-Aloud mode produces a **separate, differently-computed** score: the **Task UX Score** (`orchestrator/human_ux_report.py`). Unlike the Agent's Overall UX Score above, this is **100% deterministic Python arithmetic — no LLM is involved in producing any part of this number.**
+
+**This section documents existing, unchanged behaviour.** No formula, weight, maximum, deduction, or recovery rule described here was modified as part of adding this documentation.
+
+**Formula:** `Task UX Score = Task Completion + Verbal UX Signals + Recovery + Evidence Completeness`, out of 100.
+
+| Component | Max | Driven by |
+|---|---|---|
+| **Task Completion** | 40 | The researcher-selected `task_outcome` only: `completed` → 40, `partially_completed` → 20, `not_completed` → 0, `not_assessed` → the component (and the whole total) is reported as "Not fully assessed," never guessed. |
+| **Verbal UX Signals** | 25 | Starts at 25; each transcript segment classified `CONFUSION` deducts 2, `UNCERTAINTY` deducts 1, `COMPLAINT` deducts 2 (once per label per segment, never below 0). `EXPECTATION`, `NAVIGATION_INTENT`, and `CONFIRMATION` never deduct — they're treated as neutral/contextual, not friction. |
+| **Recovery** | 20 | Whether an explicit difficulty signal (`CONFUSION`/`UNCERTAINTY`/`COMPLAINT`) is followed later in the session by a `CONFIRMATION`, combined with `task_outcome`. No difficulty signal at all → 15/20 (nothing to judge). See the explicit anchor table and extrapolation notes in `calculate_recovery_score()`'s docstring for every outcome combination. |
+| **Evidence Completeness** | 15 | Data-quality only, not a judgement of the participant: 0 if no usable transcript, 5 if transcript exists but classification is unavailable, 10 if transcript+classification exist but timing is incomplete, 15 if transcript+classification+timing are all present. |
+
+**Why Task Completion + Evidence Completeness can dominate the score even with verbal friction present:** these two components alone are worth 55 of the 100 points and are driven by factors largely independent of HOW MANY friction labels were observed — a session with heavy `COMPLAINT`/`CONFUSION` signal use can still lose at most 25 points from Verbal UX Signals (and that's before Recovery's own credit for a difficulty-then-confirmation arc), while a `completed` outcome with full timed/classified evidence banks 55 points regardless. This is a direct, intentional consequence of the fixed component maxima above, not a separate rule.
+
+**What this score measures:** a session-specific, evidence-grounded heuristic — did the researcher judge the task completed, how much explicit verbal friction occurred, was there a recovery arc from difficulty to confirmation, and is the underlying evidence complete enough to trust the above. Every number traces back to data that actually exists for that one session (the researcher's own outcome selection, this session's own classified segments, this session's own timing completeness).
+
+**What this score does NOT measure:** general website quality, usability compared to other sites, statistical significance across multiple participants, or anything about Phase 1's Autonomous Agent friction (clicks, scrolls, navigation loops) — that data doesn't exist for a human-driven session and is never referenced anywhere in this module. The report's own `disclaimer` field states this directly: *"Task UX Score reflects evidence observed in this session and should not be interpreted as a universal website quality score."*
+
+**Distinction from the Agent's Overall UX Score:** the two are not comparable numbers on the same scale (0–10 vs. 0–100, LLM judgment vs. deterministic arithmetic, different evidence types — browser actions and friction episodes vs. spoken think-aloud evidence) and this codebase never attempts to combine or compare them directly.
 
 ---
 

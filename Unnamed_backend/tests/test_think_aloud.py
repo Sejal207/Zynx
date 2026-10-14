@@ -197,6 +197,123 @@ class SarvamResponseParsingTests(unittest.TestCase):
         self.assertEqual(result["segments"][0]["transcript"], raw["transcript"])
 
 
+class MalformedTimestampValidationTests(unittest.TestCase):
+    """Timestamp-quality hardening: a chunk with individually-parseable but
+    semantically invalid timestamps (NaN, Infinity, end < start) must never
+    be trusted as real timing -- it falls back to untimed for that segment,
+    exactly like the pre-existing TypeError/ValueError malformed-pair case."""
+
+    def test_nan_timestamp_falls_back_to_untimed(self):
+        raw = {
+            "transcript": "ignored",
+            "language_code": "en-IN",
+            "timestamps": {"words": ["some text here"], "start_time_seconds": [float("nan")], "end_time_seconds": [5.0]},
+        }
+        result = think_aloud.build_result_from_sarvam_response(raw, "sess-nan", 0.0, None)
+        self.assertEqual(len(result["segments"]), 1)
+        seg = result["segments"][0]
+        self.assertIsNone(seg["start_time_ms"])
+        self.assertIsNone(seg["end_time_ms"])
+        self.assertEqual(seg["timing_source"], think_aloud.TIMING_SOURCE_UNTIMED)
+        self.assertEqual(seg["transcript"], "some text here")  # text is kept even though timing is dropped
+
+    def test_infinite_timestamp_falls_back_to_untimed(self):
+        raw = {
+            "transcript": "ignored",
+            "language_code": "en-IN",
+            "timestamps": {"words": ["some text here"], "start_time_seconds": [0.0], "end_time_seconds": [float("inf")]},
+        }
+        result = think_aloud.build_result_from_sarvam_response(raw, "sess-inf", 0.0, None)
+        seg = result["segments"][0]
+        self.assertIsNone(seg["start_time_ms"])
+        self.assertIsNone(seg["end_time_ms"])
+        self.assertEqual(seg["timing_source"], think_aloud.TIMING_SOURCE_UNTIMED)
+
+    def test_end_before_start_falls_back_to_untimed_not_negative_duration(self):
+        """A negative duration (end < start) is never valid, even though
+        both individual values parse fine as numbers."""
+        raw = {
+            "transcript": "ignored",
+            "language_code": "en-IN",
+            "timestamps": {"words": ["some text here"], "start_time_seconds": [5.0], "end_time_seconds": [2.0]},
+        }
+        result = think_aloud.build_result_from_sarvam_response(raw, "sess-neg", 0.0, None)
+        seg = result["segments"][0]
+        self.assertIsNone(seg["start_time_ms"])
+        self.assertIsNone(seg["end_time_ms"])
+        self.assertIsNone(seg["duration_ms"])
+        self.assertEqual(seg["timing_source"], think_aloud.TIMING_SOURCE_UNTIMED)
+
+    def test_equal_start_and_end_is_valid_zero_duration(self):
+        """end == start is a legitimate (if unusual) zero-length chunk, not
+        an error -- only end < start is rejected."""
+        raw = {
+            "transcript": "ignored",
+            "language_code": "en-IN",
+            "timestamps": {"words": ["ok"], "start_time_seconds": [3.0], "end_time_seconds": [3.0]},
+        }
+        result = think_aloud.build_result_from_sarvam_response(raw, "sess-zero", 0.0, None)
+        seg = result["segments"][0]
+        self.assertEqual(seg["start_time_ms"], 3000.0)
+        self.assertEqual(seg["end_time_ms"], 3000.0)
+        self.assertEqual(seg["duration_ms"], 0.0)
+        self.assertEqual(seg["timing_source"], think_aloud.TIMING_SOURCE_ORIGINAL)
+
+    def test_one_bad_pair_among_several_only_drops_timing_for_that_segment(self):
+        raw = {
+            "transcript": "ignored",
+            "language_code": "en-IN",
+            "timestamps": {
+                "words": ["first chunk is fine.", "second chunk is broken."],
+                "start_time_seconds": [0.0, 9.0],
+                "end_time_seconds": [2.0, 1.0],  # second pair: end < start
+            },
+        }
+        result = think_aloud.build_result_from_sarvam_response(raw, "sess-mixed", 0.0, None)
+        self.assertEqual(len(result["segments"]), 2)
+        self.assertEqual(result["segments"][0]["start_time_ms"], 0.0)
+        self.assertEqual(result["segments"][0]["timing_source"], think_aloud.TIMING_SOURCE_ORIGINAL)
+        self.assertIsNone(result["segments"][1]["start_time_ms"])
+        self.assertEqual(result["segments"][1]["timing_source"], think_aloud.TIMING_SOURCE_UNTIMED)
+
+    def test_string_numeric_timestamps_still_parse(self):
+        """Sarvam is expected to return floats, but a numeric string must
+        still work rather than being rejected as malformed."""
+        raw = {
+            "transcript": "ignored",
+            "language_code": "en-IN",
+            "timestamps": {"words": ["ok"], "start_time_seconds": ["1.5"], "end_time_seconds": ["3.5"]},
+        }
+        result = think_aloud.build_result_from_sarvam_response(raw, "sess-strnum", 0.0, None)
+        seg = result["segments"][0]
+        self.assertEqual(seg["start_time_ms"], 1500.0)
+        self.assertEqual(seg["end_time_ms"], 3500.0)
+
+    def test_null_entries_in_timestamp_arrays_fall_back_to_untimed_for_that_pair(self):
+        raw = {
+            "transcript": "ignored",
+            "language_code": "en-IN",
+            "timestamps": {"words": ["ok"], "start_time_seconds": [None], "end_time_seconds": [5.0]},
+        }
+        result = think_aloud.build_result_from_sarvam_response(raw, "sess-null", 0.0, None)
+        seg = result["segments"][0]
+        self.assertIsNone(seg["start_time_ms"])
+        self.assertEqual(seg["timing_source"], think_aloud.TIMING_SOURCE_UNTIMED)
+
+    def test_non_finite_recording_start_ms_does_not_poison_every_timestamp(self):
+        """Defensive: a corrupted session offset must never propagate NaN
+        into otherwise-valid Sarvam timing -- the whole response falls back
+        to untimed rather than emitting garbage numbers."""
+        raw = {
+            "transcript": "ignored",
+            "language_code": "en-IN",
+            "timestamps": {"words": ["ok"], "start_time_seconds": [1.0], "end_time_seconds": [2.0]},
+        }
+        result = think_aloud.build_result_from_sarvam_response(raw, "sess-badoffset", float("nan"), None)
+        self.assertEqual(result["timing_status"], think_aloud.TIMING_UNTIMED)
+        self.assertIsNone(result["segments"][0]["start_time_ms"])
+
+
 class SessionLifecycleTests(unittest.TestCase):
     """Item 10: recording state transitions, using real session-relative
     timing (SessionClock), not frontend/SSE time."""
@@ -364,6 +481,101 @@ class EndpointAndModeIsolationTests(unittest.TestCase):
                 body = res.json()
                 self.assertFalse(body["available"])
                 self.assertIn("SARVAM_API_KEY", body["error"])
+        asyncio.run(_run())
+
+
+class ThinkAloudReportEndpointChecklistTests(unittest.TestCase):
+    """Exercises POST /api/think-aloud/report (real ASGI call, real FastAPI
+    app) with and without the new optional task_checklist field, to prove
+    the Pydantic wiring in main.py round-trips correctly end-to-end -- not
+    just the pure build_human_ux_report() function tested separately in
+    tests/test_human_ux_report.py.
+
+    The module-level _think_aloud_classifier_llm singleton is patched to
+    None for every test here: the real one is a live Groq client when
+    GROQ_API_KEY is configured in this environment (it is, in this repo's
+    .env), and generate_session_summary() would otherwise make a real
+    network call on every test run. With llm=None, human_ux_report.py's
+    documented deterministic fallback summary is used instead -- no network,
+    no API key required."""
+
+    @classmethod
+    def setUpClass(cls):
+        os.environ.setdefault("SARVAM_API_KEY", "fake-key-for-test")
+        import main as backend_main
+        cls.backend_main = backend_main
+
+    def setUp(self):
+        self._llm_patch = patch.object(self.backend_main, "_think_aloud_classifier_llm", None)
+        self._llm_patch.start()
+
+    def tearDown(self):
+        self._llm_patch.stop()
+
+    def _client(self):
+        import httpx
+        transport = httpx.ASGITransport(app=self.backend_main.app)
+        return httpx.AsyncClient(transport=transport, base_url="http://test")
+
+    def _base_body(self, task_outcome="completed", task_checklist=None):
+        body = {
+            "target_url": "https://example.com/", "task_description": "Find pricing",
+            "persona": {"persona_type": "novice"},
+            "segments": [{"segment_id": "s1", "transcript": "hi", "display_transcript": "hi",
+                          "raw_transcript": "hi", "start_time_ms": 0.0, "end_time_ms": 1000.0,
+                          "timing_source": "source", "language": "en-IN"}],
+            "audio_duration_ms": 1000.0, "language": "en-IN", "task_outcome": task_outcome,
+        }
+        if task_checklist is not None:
+            body["task_checklist"] = task_checklist
+        return body
+
+    def test_report_without_checklist_field_is_unaffected(self):
+        async def _run():
+            async with self._client() as client:
+                res = await client.post("/api/think-aloud/report", json=self._base_body())
+                self.assertEqual(res.status_code, 200)
+                body = res.json()
+                self.assertIn("task_checklist", body)
+                self.assertIsNone(body["task_checklist"])
+        asyncio.run(_run())
+
+    def test_report_with_checklist_round_trips_through_the_api(self):
+        checklist = [{"label": "Find pricing page", "completed": True},
+                     {"label": "Understand plans", "completed": False}]
+        async def _run():
+            async with self._client() as client:
+                res = await client.post(
+                    "/api/think-aloud/report",
+                    json=self._base_body(task_outcome="completed", task_checklist=checklist),
+                )
+                self.assertEqual(res.status_code, 200)
+                cs = res.json()["task_checklist"]
+                self.assertEqual(cs["total"], 2)
+                self.assertEqual(cs["completed_count"], 1)
+                self.assertIsNotNone(cs["warning"])
+        asyncio.run(_run())
+
+    def test_checklist_item_missing_completed_defaults_false_via_api(self):
+        async def _run():
+            async with self._client() as client:
+                res = await client.post(
+                    "/api/think-aloud/report",
+                    json=self._base_body(task_outcome="completed", task_checklist=[{"label": "A"}]),
+                )
+                self.assertEqual(res.status_code, 200)
+                item = res.json()["task_checklist"]["items"][0]
+                self.assertFalse(item["completed"])
+        asyncio.run(_run())
+
+    def test_checklist_item_missing_label_rejected_as_bad_request(self):
+        async def _run():
+            async with self._client() as client:
+                res = await client.post(
+                    "/api/think-aloud/report",
+                    json=self._base_body(task_outcome="completed", task_checklist=[{"completed": True}]),
+                )
+                self.assertEqual(res.status_code, 422)  # label is required by ChecklistItemModel
         asyncio.run(_run())
 
 

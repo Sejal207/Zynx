@@ -49,6 +49,106 @@ function ScoreRing({ value, max = 10, label, color = "#4B5694", rationale }) {
   );
 }
 
+/* ── Save / Export action bar ─────────────────────────────────────────────
+   Shared between the Autonomous Agent report tab and the Human + Think-Aloud
+   report. Keeps its own report_id/saving/exporting state so each report
+   instance is independent; `resetSignal` is any value that changes exactly
+   when a NEW (or meaningfully different) report should be save-able again
+   -- a fresh run_id for Agent, session_id+task_outcome for Human -- so a
+   stale "Saved" state never lingers over different content, and a retry of
+   the SAME report never creates a duplicate archive. */
+function ReportExportBar({ mode, getPayload, disabled, resetSignal }) {
+  const [reportId, setReportId] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const [exporting, setExporting] = useState(null); // "json" | "markdown" | "pdf" | null
+  const [exportError, setExportError] = useState("");
+
+  useEffect(() => {
+    setReportId(null); setSaveError(""); setExportError(""); setSaving(false); setExporting(null);
+  }, [resetSignal]);
+
+  const basePath = `/api/reports/${mode}`;
+
+  const handleSave = async () => {
+    if (saving || reportId) return; // already saved / in flight -- never fire a duplicate request
+    setSaving(true); setSaveError("");
+    try {
+      const res = await fetch(`${basePath}/save`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ report_id: reportId, payload: getPayload() }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.detail || `Save failed (${res.status}).`);
+      setReportId(body.report_id);
+    } catch (e) {
+      setSaveError(e.message || "Save failed.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleExport = async (format) => {
+    if (exporting) return;
+    setExporting(format); setExportError("");
+    try {
+      const res = await fetch(`${basePath}/export/${format}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ report_id: reportId, payload: getPayload() }),
+      });
+      if (!res.ok) {
+        let msg = `Export failed (${res.status}).`;
+        try { const j = await res.json(); if (j.detail) msg = j.detail; } catch (_) {}
+        throw new Error(msg);
+      }
+      const disposition = res.headers.get("Content-Disposition") || "";
+      const match = disposition.match(/filename="([^"]+)"/);
+      const ext = format === "markdown" ? "md" : format;
+      const filename = match ? match[1] : `zynx_${mode}_report.${ext}`;
+      const blob = await res.blob();
+      const dlUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = dlUrl; a.download = filename;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(dlUrl);
+    } catch (e) {
+      setExportError(e.message || "Export failed.");
+    } finally {
+      setExporting(null);
+    }
+  };
+
+  return (
+    <div className="report-block">
+      <div className="report-block-title"><em>Save &amp; Export</em></div>
+      <div className="export-bar">
+        <button type="button" className={`export-btn ${reportId ? "saved" : "primary"}`}
+          disabled={disabled || saving || !!reportId} onClick={handleSave}>
+          {saving && <span className="spinner" />}
+          {reportId ? "Saved ✓" : (saving ? "Saving…" : "Save Report")}
+        </button>
+        <button type="button" className="export-btn" disabled={disabled || exporting === "json"}
+          onClick={() => handleExport("json")}>
+          {exporting === "json" && <span className="spinner" />} Export JSON
+        </button>
+        <button type="button" className="export-btn" disabled={disabled || exporting === "markdown"}
+          onClick={() => handleExport("markdown")}>
+          {exporting === "markdown" && <span className="spinner" />} Export Markdown
+        </button>
+        <button type="button" className="export-btn" disabled={disabled || exporting === "pdf"}
+          onClick={() => handleExport("pdf")}>
+          {exporting === "pdf" && <span className="spinner" />} Export PDF
+        </button>
+      </div>
+      {reportId && <p className="export-status">Report ID: {reportId}</p>}
+      {saveError && <p className="export-status error">{saveError} <button className="tab" style={{marginLeft: 6}} onClick={handleSave}>Retry</button></p>}
+      {exportError && <p className="export-status error">{exportError}</p>}
+    </div>
+  );
+}
+
 /* ── Phase helper ─────────────────────────────────────────────────────────── */
 const PHASE_ORDER = ["running", "evaluating", "reporting", "done"];
 function phaseDone(current, target) {
@@ -103,6 +203,11 @@ function ThinkAloudPanel({ url, setUrl, task, setTask, persona, setPersona }) {
   const [taskOutcome, setTaskOutcome] = useState("not_assessed");
   const [taskOutcomeNote, setTaskOutcomeNote] = useState("");
   const [researcherNotes, setResearcherNotes] = useState("");
+  /* Optional task-completion checklist: purely researcher-entered (never
+     inferred from the transcript or an LLM), purely informational -- it is
+     sent to /api/think-aloud/report alongside task_outcome but never
+     changes the Task UX Score itself. Each item is {label, completed}. */
+  const [taskChecklist, setTaskChecklist] = useState([]);
   const [humanReport, setHumanReport] = useState(null);
   const [reportLoading, setReportLoading] = useState(false);
   const [reportError, setReportError] = useState("");
@@ -151,6 +256,7 @@ function ThinkAloudPanel({ url, setUrl, task, setTask, persona, setPersona }) {
     setTaskOutcome("not_assessed");
     setTaskOutcomeNote("");
     setResearcherNotes("");
+    setTaskChecklist([]);
     setHumanReport(null);
     setReportError("");
     setShowFullTranscript(false);
@@ -310,10 +416,11 @@ function ThinkAloudPanel({ url, setUrl, task, setTask, persona, setPersona }) {
      already on screen. Called once automatically after transcription, and
      again whenever the researcher changes the Task Outcome -- never on every
      researcher-notes keystroke (notes are local-only and never sent here). */
-  const generateReport = async (segmentsArg, outcomeArg) => {
+  const generateReport = async (segmentsArg, outcomeArg, checklistArg) => {
     setReportLoading(true);
     setReportError("");
     try {
+      const validChecklist = (checklistArg || []).filter((i) => i.label.trim());
       const res = await fetch("/api/think-aloud/report", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -325,6 +432,11 @@ function ThinkAloudPanel({ url, setUrl, task, setTask, persona, setPersona }) {
           audio_duration_ms: audioDurationMs,
           language,
           task_outcome: outcomeArg,
+          // Omitted entirely (JSON.stringify drops `undefined` keys) when
+          // empty -- matches the backend's "no checklist" default exactly,
+          // so a session with no checklist produces the same request shape
+          // as before this feature existed.
+          task_checklist: validChecklist.length > 0 ? validChecklist : undefined,
         }),
       });
       const report = await res.json();
@@ -339,7 +451,31 @@ function ThinkAloudPanel({ url, setUrl, task, setTask, persona, setPersona }) {
 
   const handleTaskOutcomeChange = (newOutcome) => {
     setTaskOutcome(newOutcome);
-    generateReport(segments, newOutcome);
+    generateReport(segments, newOutcome, taskChecklist);
+  };
+
+  /* Checklist editing. Adding/removing/toggling a subgoal regenerates the
+     report immediately (discrete actions, consistent with how changing the
+     Task Outcome already regenerates it) -- typing a label only updates
+     local state, matching how Researcher Notes never triggers a request on
+     every keystroke; label edits take effect next time the report
+     regenerates for any reason, or via the explicit "Update Checklist"
+     button in the UI. */
+  const addChecklistItem = () => {
+    setTaskChecklist((prev) => [...prev, { label: "", completed: false }]);
+  };
+  const removeChecklistItem = (index) => {
+    const next = taskChecklist.filter((_, i) => i !== index);
+    setTaskChecklist(next);
+    generateReport(segments, taskOutcome, next);
+  };
+  const updateChecklistLabel = (index, label) => {
+    setTaskChecklist((prev) => prev.map((item, i) => (i === index ? { ...item, label } : item)));
+  };
+  const toggleChecklistItem = (index) => {
+    const next = taskChecklist.map((item, i) => (i === index ? { ...item, completed: !item.completed } : item));
+    setTaskChecklist(next);
+    generateReport(segments, taskOutcome, next);
   };
 
   const editSegmentText = (segmentId, newText) => {
@@ -553,6 +689,18 @@ function ThinkAloudPanel({ url, setUrl, task, setTask, persona, setPersona }) {
                 <p className="report-para">{task}</p>
               </div>
 
+              <ReportExportBar
+                mode="think-aloud"
+                disabled={!humanReport}
+                resetSignal={`${sessionId}:${taskOutcome}`}
+                getPayload={() => ({
+                  report: humanReport,
+                  segments,
+                  researcher_notes: researcherNotes || null,
+                  task_outcome_note: taskOutcomeNote || null,
+                })}
+              />
+
               {reportError && (
                 <div className="report-block">
                   <p className="form-hint" style={{color: "#c85c6e"}}>{reportError}</p>
@@ -719,6 +867,57 @@ function ThinkAloudPanel({ url, setUrl, task, setTask, persona, setPersona }) {
                     onChange={(e) => setTaskOutcomeNote(e.target.value)}
                     placeholder="e.g. Participant found the relevant information after checking alternative navigation." />
                 </div>
+
+                {/* Task-completion checklist: optional, researcher-entered
+                    required subgoals for multi-part tasks. Purely
+                    informational -- completion is never inferred from the
+                    transcript or an LLM, and this never changes the Task UX
+                    Score. A completed/not_completed outcome that contradicts
+                    the checklist shows a warning rather than being presented
+                    as an established fact. */}
+                <div className="form-group">
+                  <label className="form-label">
+                    Task-Completion Checklist <span style={{color: "var(--steel-dim)"}}>optional, researcher input</span>
+                  </label>
+                  {taskChecklist.length > 0 && (
+                    <div className="rec-list" style={{marginBottom: 10}}>
+                      {taskChecklist.map((item, i) => (
+                        <div key={i} className="rec-item" style={{padding: "10px 0"}}>
+                          <input type="checkbox" checked={item.completed}
+                            onChange={() => toggleChecklistItem(i)} style={{marginTop: 6}} />
+                          <div className="rec-body">
+                            <input className="input" style={{width: "100%"}} value={item.label}
+                              onChange={(e) => updateChecklistLabel(i, e.target.value)}
+                              placeholder="Required subgoal, e.g. Found the pricing page" />
+                          </div>
+                          <button type="button" className="tab" onClick={() => removeChecklistItem(i)}>Remove</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div style={{display: "flex", gap: 10}}>
+                    <button type="button" className="tab" onClick={addChecklistItem}>+ Add Subgoal</button>
+                    {taskChecklist.length > 0 && (
+                      <button type="button" className="tab"
+                        onClick={() => generateReport(segments, taskOutcome, taskChecklist)}>
+                        Update Checklist
+                      </button>
+                    )}
+                  </div>
+                  {humanReport?.task_checklist?.warning && (
+                    <p className="form-hint" style={{
+                      color: "#c85c6e", marginTop: 12, textTransform: "none",
+                      letterSpacing: "0.2px", fontSize: 11, lineHeight: 1.6,
+                    }}>
+                      ⚠ {humanReport.task_checklist.warning}
+                    </p>
+                  )}
+                  {humanReport?.task_checklist && !humanReport.task_checklist.warning && humanReport.task_checklist.total > 0 && (
+                    <p className="form-hint" style={{marginTop: 12, textTransform: "none", letterSpacing: "0.2px", fontSize: 11}}>
+                      {humanReport.task_checklist.completed_count} of {humanReport.task_checklist.total} subgoals checked.
+                    </p>
+                  )}
+                </div>
               </div>
 
               {/* Researcher Notes (local only, never sent anywhere) */}
@@ -833,6 +1032,7 @@ export default function App() {
   const [report, setReport] = useState(null);
   const [scorecard, setScorecard] = useState(null);
   const [friction, setFriction] = useState(null);
+  const [runId, setRunId] = useState(null);
   const [phase, setPhase] = useState("idle");
   const terminalRef = useRef(null);
 
@@ -851,7 +1051,7 @@ export default function App() {
 
   const startEvaluation = async () => {
     setRunning(true); setEvents([]);
-    setReport(null); setScorecard(null); setFriction(null);
+    setReport(null); setScorecard(null); setFriction(null); setRunId(null);
     setPhase("running"); setActiveTab("live");
 
     try {
@@ -877,6 +1077,7 @@ export default function App() {
               try {
                 const d = JSON.parse(line.slice(6));
                 setEvents((p) => [...p, d]);
+                if (d.event === "start") setRunId(d.run_id);
                 if (d.event === "evaluating") setPhase("evaluating");
                 if (d.event === "reporting") setPhase("reporting");
                 if (d.event === "scorecard") setScorecard(d.scorecard);
@@ -1285,6 +1486,22 @@ export default function App() {
                       </div>
                     </div>
                   )}
+
+                  <ReportExportBar
+                    mode="agent"
+                    disabled={!scorecard && !report}
+                    resetSignal={runId}
+                    getPayload={() => ({
+                      run_id: runId,
+                      target_url: url,
+                      task_description: task,
+                      persona,
+                      task_completed: latest?.task_completed ?? null,
+                      scorecard: scorecard || {},
+                      report: report || {},
+                      friction: friction || null,
+                    })}
+                  />
 
                   {/* Score rings */}
                   {scorecard && (

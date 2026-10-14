@@ -477,6 +477,74 @@ def generate_session_summary(
     return "Observed evidence in this session included: " + "; ".join(fragments) + "."
 
 
+# --------------------------------------------- E. task-completion checklist
+#
+# Purely informational and additive: an optional, researcher-filled list of
+# required subgoals for multi-part tasks, so a "completed" outcome can be
+# checked against explicit evidence instead of being taken on faith. This
+# NEVER feeds calculate_task_ux_score() or any other scoring function above
+# -- the score formula, maxima, and deductions are completely unchanged by
+# this section. Completion of each item is 100% researcher-entered; nothing
+# here infers completion from a transcript, a CONFIRMATION label, or an LLM.
+
+def build_task_checklist_summary(
+    checklist: Optional[List[Dict[str, Any]]], task_outcome: str,
+) -> Optional[Dict[str, Any]]:
+    """Validates and summarizes an optional subgoal checklist.
+
+    Returns None when no checklist was provided at all (the common case,
+    and the ONLY case for every session recorded before this feature
+    existed) -- old sessions/payloads that never mention `task_checklist`
+    produce a report identical in shape to before, just with this one key
+    present and set to None, which is backward compatible with any existing
+    reader that already defensively does `report.get("task_checklist")`.
+
+    Malformed entries (not a dict, or no usable `label` string) are dropped
+    silently rather than guessed at -- consistent with this module's
+    "never fabricate" rule elsewhere. `completed` is coerced to a plain
+    bool via truthiness; anything other than an explicit true-ish value is
+    treated as not completed (never assumed complete by default).
+    """
+    if not checklist:
+        return None
+
+    items: List[Dict[str, Any]] = []
+    for raw in checklist:
+        if not isinstance(raw, dict):
+            continue
+        label = raw.get("label")
+        if not isinstance(label, str) or not label.strip():
+            continue
+        items.append({"label": label.strip(), "completed": bool(raw.get("completed", False))})
+
+    total = len(items)
+    completed_count = sum(1 for i in items if i["completed"])
+    all_completed = total > 0 and completed_count == total
+
+    warning = None
+    if total == 0:
+        warning = "A checklist was provided but contained no valid subgoal entries."
+    elif task_outcome == "completed" and not all_completed:
+        warning = (
+            f"Task outcome is marked 'completed' but only {completed_count} of {total} "
+            "subgoals are checked. Treat the completion claim as unverified until the "
+            "checklist is reconciled with the selected outcome."
+        )
+    elif task_outcome == "not_completed" and all_completed:
+        warning = (
+            f"Task outcome is marked 'not completed' but all {total} subgoals are checked. "
+            "Review whether the selected outcome is still accurate."
+        )
+
+    return {
+        "items": items,
+        "total": total,
+        "completed_count": completed_count,
+        "all_completed": all_completed,
+        "warning": warning,
+    }
+
+
 # --------------------------------------------------------- full report ---
 
 def build_human_ux_report(
@@ -488,10 +556,16 @@ def build_human_ux_report(
     language: Optional[str],
     task_outcome: str = DEFAULT_TASK_OUTCOME,
     llm=None,
+    task_checklist: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Assembles the full HumanUXReport. Pure function of its inputs (plus
     one optional LLM call for prose summary only) -- safe to call repeatedly
-    with the same session data and always get the same score/breakdown."""
+    with the same session data and always get the same score/breakdown.
+
+    `task_checklist` is optional and purely additive (see
+    build_task_checklist_summary above) -- omitting it entirely reproduces
+    the exact report shape this function has always returned, for backward
+    compatibility with existing callers/sessions."""
     if task_outcome not in TASK_OUTCOMES:
         task_outcome = DEFAULT_TASK_OUTCOME
 
@@ -502,6 +576,7 @@ def build_human_ux_report(
     findings = build_findings(segments)
     expectation_experience = build_expectation_vs_experience(segments)
     summary = generate_session_summary(llm, task_description, persona, segments, task_outcome)
+    checklist_summary = build_task_checklist_summary(task_checklist, task_outcome)
 
     return {
         "session": {
@@ -513,6 +588,7 @@ def build_human_ux_report(
             "segment_count": len(segments),
         },
         "task_outcome": task_outcome,
+        "task_checklist": checklist_summary,
         "score": score,
         "signal_summary": signal_summary,
         "timeline": timeline,

@@ -16,9 +16,10 @@ event_type/source conventions as Phase 0 browser events, with source
 later phase without needing a different shape today.
 """
 import logging
+import math
 import re
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .events import SessionClock, make_event
 from .transliteration import romanize
@@ -46,6 +47,33 @@ TIMING_SOURCE_UNTIMED = "untimed"    # no usable timestamp at all
 # decimal numbers, which is an accepted, documented limitation for
 # think-aloud speech transcripts (rare in practice here).
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?।॥])\s+")
+
+
+def _parse_timestamp_pair(s: Any, e: Any, recording_start_ms: float) -> Tuple[Optional[float], Optional[float]]:
+    """Converts one Sarvam (start_seconds, end_seconds) pair into session-
+    relative milliseconds, or (None, None) if the pair is not usable.
+
+    "Not usable" covers every malformed-timestamp case this module must
+    never silently paper over: non-numeric values, NaN/Infinity (which would
+    otherwise propagate into a duration calculation and, eventually, invalid
+    JSON), and end < start (a negative duration -- never a valid chunk, even
+    though the raw values individually parse as numbers). In every case the
+    caller keeps the transcribed TEXT and only drops the timing for that one
+    segment, consistent with "never invent, only omit what isn't real."
+    """
+    try:
+        s_val = float(s)
+        e_val = float(e)
+    except (TypeError, ValueError):
+        return None, None
+    if not (math.isfinite(s_val) and math.isfinite(e_val)):
+        return None, None
+    if e_val < s_val:
+        return None, None
+    return (
+        round(recording_start_ms + s_val * 1000, 1),
+        round(recording_start_ms + e_val * 1000, 1),
+    )
 
 
 def _split_into_sentences(text: str) -> List[str]:
@@ -183,6 +211,15 @@ def build_result_from_sarvam_response(
         return make_result(session_id, [], audio_duration_ms, None, TIMING_INVALID,
                             available=False, error="Malformed STT response (not a JSON object)")
 
+    # A non-finite session offset would silently poison every timestamp
+    # computed below (NaN propagates through arithmetic without raising).
+    # This should never happen -- recording_start_ms always comes from our
+    # own SessionClock -- but a session with a corrupted/missing offset
+    # (e.g. get_recording_start_ms() on a malformed session) must fall back
+    # to treating every chunk as untimed rather than emit garbage timing.
+    if not isinstance(recording_start_ms, (int, float)) or not math.isfinite(recording_start_ms):
+        recording_start_ms = None
+
     transcript = (raw.get("transcript") or "").strip()
     language = raw.get("language_code")
     if not language or language == "unknown":
@@ -199,7 +236,8 @@ def build_result_from_sarvam_response(
     segments: List[Dict[str, Any]] = []
 
     have_aligned_timestamps = (
-        isinstance(words, list) and isinstance(starts, list) and isinstance(ends, list)
+        recording_start_ms is not None
+        and isinstance(words, list) and isinstance(starts, list) and isinstance(ends, list)
         and len(words) > 0 and len(words) == len(starts) == len(ends)
     )
 
@@ -208,13 +246,10 @@ def build_result_from_sarvam_response(
             text = (text or "").strip()
             if not text:
                 continue
-            try:
-                s_ms = round(recording_start_ms + float(s) * 1000, 1)
-                e_ms = round(recording_start_ms + float(e) * 1000, 1)
-            except (TypeError, ValueError):
-                # A single malformed timestamp pair -- keep the text, drop timing
-                # for this segment only, rather than discarding it entirely.
-                s_ms = e_ms = None
+            # A single malformed timestamp pair (non-numeric, NaN/Infinity, or
+            # end < start) -- keep the text, drop timing for this segment
+            # only, rather than discarding it entirely or trusting bad data.
+            s_ms, e_ms = _parse_timestamp_pair(s, e, recording_start_ms)
 
             # Sarvam sometimes returns ONE chunk spanning many sentences (a
             # whole 24s recording as a single "word"/timestamp pair). Split

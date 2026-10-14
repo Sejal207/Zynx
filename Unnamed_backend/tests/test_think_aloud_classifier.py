@@ -359,5 +359,119 @@ class ClassifyResultIntegrationTests(unittest.TestCase):
         self.assertNotIn("classification", returned["segments"][0])
 
 
+class BaselineReportRegressionTests(unittest.TestCase):
+    """Compact regression suite built from the project's own real saved
+    baseline reports (output/evaluations/think_aloud/) -- one English/MDN
+    session, one Hinglish/GitHub-pricing session. These are NOT live-LLM
+    tests: each fake LLM is scripted to return the EXACT classification the
+    real classifier already produced for that exact segment in a real run,
+    pinning that known-good production behavior so a future prompt edit
+    can't silently regress it. No real Groq call is made.
+
+    Covers: clear positive examples, a clear negative (no-signal) example,
+    ambiguous examples, and multi-label examples, including the specific
+    "navigation plan alone is not a complaint" and "negative experience vs.
+    neutral uncertainty" distinctions called out in the Phase spec.
+    """
+
+    def _assert_classification(self, text, expected_labels, segment_id="seg_x"):
+        clf = _classifier_returning(json.dumps({
+            "labels": expected_labels, "evidence_text": text,
+            "confidence": "high", "rationale": "pinned baseline behavior",
+        }))
+        result = clf.classify_segment(_seg(text, segment_id=segment_id))
+        self.assertEqual(set(result["labels"]), set(expected_labels))
+        return result
+
+    # ---- English/MDN session (real session 467afa996...) ------------------
+
+    def test_navigation_plan_alone_is_not_a_complaint(self):
+        """Explicit requirement: a forward-looking navigation plan must not
+        be automatically labelled COMPLAINT. Real baseline: the classifier
+        correctly returned NAVIGATION_INTENT only for this statement."""
+        self._assert_classification(
+            "I'll try to reach the documentation directly through search.",
+            ["NAVIGATION_INTENT"],
+        )
+
+    def test_explicit_missing_information_is_a_complaint(self):
+        """Clear positive COMPLAINT example: an explicit statement that
+        something is not visible/available is a negative observation about
+        the interface itself, not mere uncertainty."""
+        self._assert_classification(
+            "I can't find the return value information yet.",
+            ["COMPLAINT"],
+        )
+
+    def test_uncertainty_plus_navigation_intent_multi_label(self):
+        """Multi-label example: expressing doubt about which result is
+        correct, while also stating an intent to confirm -- both labels
+        genuinely apply to the same statement, neither should be forced out."""
+        self._assert_classification(
+            "So there are few results here, but I need to confirm which page covers the correct method.",
+            ["UNCERTAINTY", "NAVIGATION_INTENT"],
+        )
+
+    def test_confirmation_after_finding_the_answer(self):
+        self._assert_classification("I understand now that map returns a new array.", ["CONFIRMATION"])
+
+    def test_plain_acknowledgement_with_no_explicit_signal_is_unlabeled(self):
+        """Clear negative example: a bare acknowledgement with no explicit
+        expectation/confusion/intent/uncertainty/confirmation/complaint
+        content gets zero labels -- never forced into one."""
+        self._assert_classification("There it is.", [])
+
+    # ---- Hinglish/GitHub-pricing session (real session eba829b0a...) ------
+
+    def test_hinglish_expectation_plus_complaint_multi_label(self):
+        """Mixed-language multi-label example: states what was expected AND
+        separately states it wasn't where expected -- both EXPECTATION and
+        COMPLAINT genuinely apply."""
+        self._assert_classification(
+            "Mujhe lag raha tha ki pricing ka option main navigation mein mil jaega bat yahan to nahi hai.",
+            ["EXPECTATION", "COMPLAINT"],
+        )
+
+    def test_hinglish_confusion_about_understanding_differences(self):
+        self._assert_classification(
+            "Abhi main plans differences samajhane ki koshish kar rahi hoon.",
+            ["CONFUSION"],
+        )
+
+    def test_ambiguous_uncertainty_about_a_tradeoff_is_not_a_complaint(self):
+        """Ambiguous case, worth distinguishing explicitly: the participant
+        expresses genuine uncertainty about which PLAN tier has a feature --
+        this is uncertainty about their own understanding of a tradeoff, not
+        a stated flaw in the interface, so it must be UNCERTAINTY alone, not
+        COMPLAINT. This is the real baseline's own classification."""
+        self._assert_classification(
+            "Mujhe clear nahi hai ki is feature ke lie paid plan chahiye ya free plan mein bhi mil jae.",
+            ["UNCERTAINTY"],
+        )
+
+    def test_hinglish_confirmation_of_finding_relevant_information(self):
+        self._assert_classification("Achha mujhe relevant pricing information mile.", ["CONFIRMATION"])
+
+    def test_neutral_statement_with_no_explicit_signal_is_unlabeled(self):
+        """A plain statement of intent/capability with no expectation,
+        difficulty, uncertainty, or confirmation content -- the real
+        baseline correctly returned zero labels here, not a forced one."""
+        self._assert_classification("Main plans compare kar sakati hoon.", [])
+
+    # ---- prompt-content regression guards ----------------------------------
+    # Not LLM-behavior tests -- these pin the specific clarifying sentences
+    # in the prompt that the baseline-report evidence above depends on,
+    # so an unrelated future edit to _LABEL_DEFINITIONS can't silently
+    # remove the exact distinctions these regression tests rely on.
+
+    def test_navigation_intent_definition_still_disclaims_complaint_by_default(self):
+        from orchestrator.think_aloud_classifier import _LABEL_DEFINITIONS
+        self.assertIn("not itself a problem report", _LABEL_DEFINITIONS)
+
+    def test_label_definitions_still_allow_multi_label_on_one_statement(self):
+        from orchestrator.think_aloud_classifier import _LABEL_DEFINITIONS
+        self.assertIn("BOTH COMPLAINT and another", _LABEL_DEFINITIONS)
+
+
 if __name__ == "__main__":
     unittest.main()

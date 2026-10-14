@@ -33,6 +33,24 @@ Three tiers, checked per whitespace-delimited token:
 
 Any character this module doesn't recognize is passed through unchanged
 rather than guessed at, per "preserve rather than invent."
+
+KNOWN LIMITATIONS (by design -- not attempting full Hindi transliteration):
+  - The dictionaries only cover the highest-frequency words actually observed
+    in Zynx Think-Aloud sessions (common discourse words + common UX/tech
+    loanwords). Any other Devanagari word falls to the character-level
+    phonetic fallback, which is readable but not always the conventional
+    spelling (e.g. a rare proper noun may come out awkwardly).
+  - Genuinely ambiguous words are deliberately left unmapped rather than
+    guessed -- e.g. "पेड" ("ped") could mean the English loanword "paid" OR
+    the Hindi word for "tree"; this module does not pick one.
+  - Medial schwa deletion (the full Hindi rule for when an inherent "a" is
+    silent mid-word, not just word-final) is a genuinely hard, actively
+    researched NLP problem and is intentionally not attempted -- only the
+    simple, well-established word-final case is handled.
+  - The sentence-level `_SENTENCE_SPLIT_RE` regex used upstream (in
+    think_aloud.py) can over-split on abbreviations or decimal numbers; this
+    module itself is unaffected (it transliterates whatever text it's given)
+    but downstream segment boundaries inherit that heuristic's limits.
 """
 import re
 from typing import Optional
@@ -96,8 +114,33 @@ ENGLISH_LOANWORDS = {
     # ॉ character in the middle of otherwise-Romanized output.
     "इन्फॉर्मेशन": "information", "इन्फ़ॉर्मेशन": "information",
     "इनफॉर्मेशन": "information", "इंफॉर्मेशन": "information",
-    "रिलेवेंट": "relevant",
+    "रिलेवेंट": "relevant", "रेलेवेंट": "relevant",
+    # Added from real baseline-report failures: the character-level fallback
+    # produced unreadable mid-word respellings (e.g. "gitahab", "phichar",
+    # "kanpeyar") for these common UX/tech loanwords -- see
+    # test_transliteration.py's BaselineReportRegressionTests for the exact
+    # strings this fixes.
+    "गिटहब": "GitHub", "गीटहब": "GitHub",
+    "फीचर": "feature", "फीचर्स": "features",
+    "कंपेयर": "compare", "कम्पेयर": "compare",
+    "मेन": "main",  # English "main" (e.g. "main navigation") -- distinct
+                     # from "मैं" (Hindi "I"), already in COMMON_WORDS above.
+    "डिफरेंस": "difference", "डिफरेंसेस": "differences", "डिफ्रेंस": "difference",
+    "ऑप्शन": "option", "ऑप्शंस": "options",
+    "फ्री": "free",
+    "क्लियर": "clear",
+    "प्लान": "plan", "प्लांस": "plans",
+    "डॉक्यूमेंटेशन": "documentation", "डाक्यूमेंटेशन": "documentation",
+    "कन्फ्यूजन": "confusion", "कन्फूज़न": "confusion",
+    "कन्फर्मेशन": "confirmation", "कन्फरमेशन": "confirmation",
 }
+# Known, deliberate omission: "पेड" ("ped") is genuinely ambiguous between
+# the English loanword "paid" (e.g. "paid plan") and the Hindi word for
+# "tree" -- mapping it unconditionally to either meaning would be exactly
+# the "confidently fabricated" risk this module is designed to avoid, so it
+# is left to the character-level phonetic fallback ("ped": imperfect but
+# not wrong) rather than guessed. See the module docstring's limitations
+# note for this and other known gaps.
 
 # ---- tier 3: character-level phonetic fallback -----------------------------
 _CONSONANTS = {

@@ -10,3 +10,4 @@ langchain-openai
 langchain-groq
 python-multipart
 httpx
+reportlab

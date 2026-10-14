@@ -184,5 +184,114 @@ class FullPipelineRomanizationTests(unittest.TestCase):
         self.assertEqual(result["segments"][1]["display_transcript"], "Pricing nahi dikh rahi hai")
 
 
+class BaselineReportRegressionTests(unittest.TestCase):
+    """Regression tests built from the ACTUAL raw_transcript strings found in
+    a real saved baseline report (output/evaluations/think_aloud/, GitHub
+    pricing-plans session) that exposed unreadable character-level-fallback
+    respellings -- e.g. "gitahab", "phichar", "kanpeyar". Each test pins the
+    exact input string and the now-correct output, so a future dictionary
+    change can't silently regress these specific words."""
+
+    def test_github_is_not_phonetically_mangled(self):
+        raw = "सो मुझे गिटहब के प्राइसिंग प्लांस देखने थे।"
+        out = romanize(raw)
+        self.assertIn("GitHub", out)
+        self.assertNotIn("gitahab", out.lower())
+
+    def test_option_and_main_navigation_are_readable(self):
+        raw = "मुझे लग रहा था कि प्राइसिंग का ऑप्शन मेन नेविगेशन में मिल जाएगा बट यहां तो नहीं है।"
+        out = romanize(raw)
+        self.assertIn("option", out.lower())
+        self.assertIn("main navigation", out.lower())
+
+    def test_differences_is_not_phonetically_mangled(self):
+        raw = "अभी मेन प्लांस डिफरेंसेस समझने की कोशिश कर रही हूं।"
+        out = romanize(raw)
+        self.assertIn("differences", out.lower())
+        self.assertNotIn("dipharenses", out.lower())
+
+    def test_feature_and_clear_are_readable(self):
+        raw = "मुझे क्लियर नहीं है कि इस फीचर के लिए पेड प्लान चाहिए या फ्री प्लान में भी मिल जाए।"
+        out = romanize(raw)
+        self.assertIn("clear", out.lower())
+        self.assertNotIn("kliyar", out.lower())
+        self.assertIn("feature", out.lower())
+        self.assertNotIn("phichar", out.lower())
+        self.assertIn("free", out.lower())
+        self.assertNotIn("phri", out.lower())
+
+    def test_relevant_spelling_variant_is_covered(self):
+        """The dictionary previously only covered the "रिलेवेंट" spelling;
+        the real baseline used the "रेलेवेंट" variant and fell through to
+        the phonetic fallback, which rendered it as "relevent" (typo-like,
+        not the real spelling)."""
+        raw = "अच्छा मुझे रेलेवेंट प्राइसिंग इंफॉर्मेशन मिले।"
+        out = romanize(raw)
+        self.assertIn("relevant", out.lower())
+        self.assertIn("information", out.lower())
+
+    def test_compare_is_not_phonetically_mangled(self):
+        raw = "मेन प्लांस कंपेयर मैं प्लांस कंपेयर कर सकती हूं।"
+        out = romanize(raw)
+        self.assertIn("compare", out.lower())
+        self.assertNotIn("kanpeyar", out.lower())
+
+    def test_paid_tree_ambiguity_left_unresolved_not_fabricated(self):
+        """Documented known limitation: "पेड" is genuinely ambiguous
+        (paid/tree) and must NOT be silently resolved to either meaning."""
+        out = romanize("पेड प्लान")
+        self.assertNotIn("paid", out.lower())  # never confidently fabricated
+        self.assertNotIn("tree", out.lower())  # nor the other reading
+
+    def test_english_technical_tokens_pass_through_untouched_mid_sentence(self):
+        """Protects pure-English tokens embedded in a Devanagari sentence
+        from any destructive character-level transliteration -- they are
+        never Devanagari in the first place, so romanize() must leave them
+        byte-for-byte unchanged."""
+        raw = "मुझे GitHub pricing page पर जाना है।"
+        out = romanize(raw)
+        self.assertIn("GitHub pricing page", out)
+
+    def test_documentation_search_button_scroll_confirmation_confusion(self):
+        """Additional required-term coverage beyond the GitHub-session
+        examples: documentation, search, button, scroll, confusion,
+        confirmation."""
+        cases = {
+            "मुझे डॉक्यूमेंटेशन चाहिए।": "documentation",
+            "मैंने सर्च बार में टाइप किया।": "search",
+            "मैंने बटन दबाया।": "button",
+            "मुझे स्क्रॉल करना पड़ा।": "scroll",
+            "मुझे कन्फ्यूजन हो रहा है।": "confusion",
+            "यह कन्फर्मेशन मिल गया।": "confirmation",
+        }
+        for raw, expected_word in cases.items():
+            with self.subTest(raw=raw):
+                out = romanize(raw).lower()
+                self.assertIn(expected_word, out)
+
+    def test_raw_transcript_is_never_mutated_by_the_dictionary_additions(self):
+        """Confirms the new dictionary entries only affect display_transcript
+        -- raw_transcript remains the exact Sarvam-returned string."""
+        raw = "सो मुझे गिटहब के प्राइसिंग प्लांस देखने थे।"
+        seg = think_aloud.make_segment(raw)
+        self.assertEqual(seg["raw_transcript"], raw)
+        self.assertIn("GitHub", seg["display_transcript"])
+
+    def test_display_transcript_has_no_unexpected_devanagari_for_these_sentences(self):
+        """For sentences fully covered by the dictionaries, the Romanized
+        output should contain no leftover Devanagari characters at all."""
+        import re
+        from orchestrator.transliteration import DEVANAGARI_RANGE
+        raw_sentences = [
+            "सो मुझे गिटहब के प्राइसिंग प्लांस देखने थे।",
+            "अभी मेन प्लांस डिफरेंसेस समझने की कोशिश कर रही हूं।",
+            "अच्छा मुझे रेलेवेंट प्राइसिंग इंफॉर्मेशन मिले।",
+        ]
+        for raw in raw_sentences:
+            with self.subTest(raw=raw):
+                out = romanize(raw)
+                self.assertFalse(DEVANAGARI_RANGE.search(out), f"unexpected Devanagari left in: {out!r}")
+
+
 if __name__ == "__main__":
     unittest.main()

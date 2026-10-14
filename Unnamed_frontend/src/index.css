@@ -577,6 +577,32 @@ body::before {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ── Save / Export action bar ── */
+.export-bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+}
+.export-btn {
+  display: flex; align-items: center; gap: 7px;
+  padding: 9px 16px; border-radius: var(--radius-sm);
+  font-family: var(--sans);
+  font-size: 10px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase;
+  background: transparent;
+  color: var(--steel);
+  border: 1px solid var(--cream-ghost);
+  cursor: pointer; transition: all var(--transition);
+}
+.export-btn:hover:not(:disabled) { color: var(--cream); border-color: var(--steel-dim); }
+.export-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.export-btn.primary {
+  background: var(--cream); color: var(--navy-deep); border-color: var(--cream);
+}
+.export-btn.primary:hover:not(:disabled) { background: #fff; }
+.export-btn.saved {
+  color: #7fae8e; border-color: rgba(127,174,142,0.35); background: rgba(127,174,142,0.08);
+}
+.export-status { font-size: 10px; color: var(--steel-dim); letter-spacing: 0.3px; }
+.export-status.error { color: #c85c6e; }
+
 /* ═══════════════════════════════════════════════════════════
    REPORT TAB
 ═══════════════════════════════════════════════════════════ */

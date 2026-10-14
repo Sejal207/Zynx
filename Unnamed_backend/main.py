@@ -29,11 +29,12 @@ _gb = os.getenv("GROQ_API_BASE", "")
 if _gb.rstrip("/").endswith("/openai/v1"):
     os.environ.pop("GROQ_API_BASE", None)
 
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
+from datetime import datetime, timezone
 import json
 import uuid
 
@@ -313,6 +314,13 @@ async def think_aloud_get_session(session_id: str):
     }
 
 
+class ChecklistItemModel(BaseModel):
+    """One researcher-entered required subgoal. `completed` is explicit
+    researcher input only -- never inferred from the transcript or an LLM."""
+    label: str
+    completed: bool = False
+
+
 class HumanUXReportRequest(BaseModel):
     """Report generation is a pure function of the data the frontend already
     has from /transcribe -- no server-side session lookup needed, so the
@@ -325,6 +333,10 @@ class HumanUXReportRequest(BaseModel):
     audio_duration_ms: Optional[float] = None
     language: Optional[str] = None
     task_outcome: str = human_ux_report.DEFAULT_TASK_OUTCOME
+    # Optional task-completion checklist: purely informational, never feeds
+    # the score. Omitted entirely by any pre-existing frontend build -- the
+    # Pydantic default (None) keeps older clients working unchanged.
+    task_checklist: Optional[List[ChecklistItemModel]] = None
 
 
 @app.post("/api/think-aloud/report")
@@ -335,6 +347,10 @@ async def think_aloud_report(request: HumanUXReportRequest):
     session result -- never Phase 1 autonomous-agent friction data, which
     does not exist for a human-driven session."""
     try:
+        checklist = (
+            [item.model_dump() for item in request.task_checklist]
+            if request.task_checklist is not None else None
+        )
         report = human_ux_report.build_human_ux_report(
             target_url=request.target_url,
             task_description=request.task_description,
@@ -344,11 +360,218 @@ async def think_aloud_report(request: HumanUXReportRequest):
             language=request.language,
             task_outcome=request.task_outcome,
             llm=_think_aloud_classifier_llm,
+            task_checklist=checklist,
         )
         return report
     except Exception as e:
         ta_logger.exception("Human UX report generation failed")
         return {"error": f"Report generation failed: {e}"}
+
+
+# ============================================================================
+# REPORT PERSISTENCE AND EXPORT (Save Report / JSON / Markdown / PDF)
+#
+# Separate from report GENERATION above: these endpoints never compute a
+# score, re-classify a transcript, or produce a new finding. They only
+# format and (optionally, on an explicit Save) persist report data the
+# frontend already has from the existing Agent/Human report flows. Agent and
+# Human reports are archived under separate directories, with separate
+# schemas and separate PDF/Markdown templates -- never merged into one
+# generic report type. No database is used; see orchestrator/report_store.py.
+# ============================================================================
+
+try:
+    from .orchestrator import report_store, report_export
+except ImportError:
+    from orchestrator import report_store, report_export
+
+report_logger = logging.getLogger("ux-report-api")
+
+
+class AgentReportPayload(BaseModel):
+    """Mirrors exactly what the frontend already holds after an Agent run:
+    the SSE 'report' event's `report`/`scorecard`/`friction`, plus the
+    run's own target_url/task_description/persona/task_completed. Nothing
+    here is recomputed -- it is reused as-is."""
+    run_id: Optional[str] = None
+    target_url: str
+    task_description: str = ""
+    persona: Optional[Dict[str, Any]] = None
+    task_completed: Optional[bool] = None
+    scorecard: Dict[str, Any] = {}
+    report: Dict[str, Any] = {}
+    friction: Optional[Dict[str, Any]] = None
+
+
+class AgentReportRequest(BaseModel):
+    """report_id is optional: omitted (or invalid) means "new/unsaved"; a
+    previously-returned report_id makes a Save idempotent and makes an
+    Export show the real archived ID instead of '(unsaved)'."""
+    report_id: Optional[str] = None
+    payload: AgentReportPayload
+
+
+class ThinkAloudReportPayload(BaseModel):
+    """`report` is the exact JSON already returned by POST
+    /api/think-aloud/report (human_ux_report.build_human_ux_report's
+    output). `segments` is the full transcript segment list the frontend
+    already holds (raw_transcript, display_transcript, classification,
+    timing). Neither is recomputed here."""
+    report: Dict[str, Any]
+    segments: List[Dict[str, Any]] = []
+    researcher_notes: Optional[str] = None
+    task_outcome_note: Optional[str] = None
+
+
+class ThinkAloudReportRequest(BaseModel):
+    report_id: Optional[str] = None
+    payload: ThinkAloudReportPayload
+
+
+def _display_report_id(report_id: Optional[str]) -> Optional[str]:
+    """Only ever show/use a report_id that is actually shaped like one of
+    ours -- an invalid or malformed client-supplied id is treated as
+    'unsaved' rather than trusted."""
+    return report_id if report_store.is_valid_report_id(report_id) else None
+
+
+def _download(content, media_type: str, filename: str) -> Response:
+    return Response(
+        content=content, media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ---- Agent: save -----------------------------------------------------------
+
+@app.post("/api/reports/agent/save")
+async def save_agent_report(request: AgentReportRequest):
+    payload = request.payload.model_dump()
+    try:
+        result = report_store.save_report(
+            mode="agent",
+            report_id=request.report_id,
+            build_json=lambda rid, gen_at: report_export.agent_report_to_dict(payload, rid, gen_at),
+            build_md=lambda rid, gen_at: report_export.agent_report_to_markdown(payload, rid, gen_at),
+            build_pdf=lambda rid, gen_at: report_export.agent_report_to_pdf(payload, rid, gen_at),
+        )
+        return result
+    except report_store.ReportStoreError:
+        raise HTTPException(status_code=500, detail="Could not save the report to disk. Please try again.")
+    except Exception:
+        report_logger.exception("Agent report save failed")
+        raise HTTPException(status_code=500, detail="Could not save the report. Please try again.")
+
+
+# ---- Agent: exports ---------------------------------------------------------
+
+@app.post("/api/reports/agent/export/json")
+async def export_agent_json(request: AgentReportRequest):
+    payload = request.payload.model_dump()
+    report_id = _display_report_id(request.report_id)
+    generated_at = datetime.now(timezone.utc).isoformat()
+    try:
+        data = report_store.scrub_secrets(report_export.agent_report_to_dict(payload, report_id, generated_at))
+        body = json.dumps(data, indent=2, ensure_ascii=False, default=str)
+    except Exception:
+        report_logger.exception("Agent JSON export failed")
+        raise HTTPException(status_code=500, detail="Could not build the JSON export.")
+    return _download(body, "application/json", f"ZYNX_Agent_Report_{report_id or 'draft'}.json")
+
+
+@app.post("/api/reports/agent/export/markdown")
+async def export_agent_markdown(request: AgentReportRequest):
+    payload = request.payload.model_dump()
+    report_id = _display_report_id(request.report_id)
+    generated_at = datetime.now(timezone.utc).isoformat()
+    try:
+        body = report_export.agent_report_to_markdown(payload, report_id, generated_at)
+    except Exception:
+        report_logger.exception("Agent Markdown export failed")
+        raise HTTPException(status_code=500, detail="Could not build the Markdown export.")
+    return _download(body, "text/markdown; charset=utf-8", f"ZYNX_Agent_Report_{report_id or 'draft'}.md")
+
+
+@app.post("/api/reports/agent/export/pdf")
+async def export_agent_pdf(request: AgentReportRequest):
+    payload = request.payload.model_dump()
+    report_id = _display_report_id(request.report_id)
+    generated_at = datetime.now(timezone.utc).isoformat()
+    try:
+        body = report_export.agent_report_to_pdf(payload, report_id, generated_at)
+    except Exception:
+        report_logger.exception("Agent PDF export failed")
+        raise HTTPException(status_code=500, detail="Could not build the PDF export.")
+    return _download(body, "application/pdf", f"ZYNX_Agent_Report_{report_id or 'draft'}.pdf")
+
+
+# ---- Human Think-Aloud: save -------------------------------------------------
+
+@app.post("/api/reports/think-aloud/save")
+async def save_think_aloud_report(request: ThinkAloudReportRequest):
+    p = request.payload
+    try:
+        result = report_store.save_report(
+            mode="think_aloud",
+            report_id=request.report_id,
+            build_json=lambda rid, gen_at: report_export.think_aloud_report_to_dict(
+                p.report, p.segments, p.researcher_notes, p.task_outcome_note, rid, gen_at),
+            build_md=lambda rid, gen_at: report_export.think_aloud_report_to_markdown(
+                p.report, p.segments, p.researcher_notes, p.task_outcome_note, rid, gen_at),
+            build_pdf=lambda rid, gen_at: report_export.think_aloud_report_to_pdf(
+                p.report, p.segments, p.researcher_notes, p.task_outcome_note, rid, gen_at),
+        )
+        return result
+    except report_store.ReportStoreError:
+        raise HTTPException(status_code=500, detail="Could not save the report to disk. Please try again.")
+    except Exception:
+        report_logger.exception("Think-Aloud report save failed")
+        raise HTTPException(status_code=500, detail="Could not save the report. Please try again.")
+
+
+# ---- Human Think-Aloud: exports ----------------------------------------------
+
+@app.post("/api/reports/think-aloud/export/json")
+async def export_think_aloud_json(request: ThinkAloudReportRequest):
+    p = request.payload
+    report_id = _display_report_id(request.report_id)
+    generated_at = datetime.now(timezone.utc).isoformat()
+    try:
+        data = report_store.scrub_secrets(report_export.think_aloud_report_to_dict(
+            p.report, p.segments, p.researcher_notes, p.task_outcome_note, report_id, generated_at))
+        body = json.dumps(data, indent=2, ensure_ascii=False, default=str)
+    except Exception:
+        report_logger.exception("Think-Aloud JSON export failed")
+        raise HTTPException(status_code=500, detail="Could not build the JSON export.")
+    return _download(body, "application/json", f"ZYNX_ThinkAloud_Report_{report_id or 'draft'}.json")
+
+
+@app.post("/api/reports/think-aloud/export/markdown")
+async def export_think_aloud_markdown(request: ThinkAloudReportRequest):
+    p = request.payload
+    report_id = _display_report_id(request.report_id)
+    generated_at = datetime.now(timezone.utc).isoformat()
+    try:
+        body = report_export.think_aloud_report_to_markdown(
+            p.report, p.segments, p.researcher_notes, p.task_outcome_note, report_id, generated_at)
+    except Exception:
+        report_logger.exception("Think-Aloud Markdown export failed")
+        raise HTTPException(status_code=500, detail="Could not build the Markdown export.")
+    return _download(body, "text/markdown; charset=utf-8", f"ZYNX_ThinkAloud_Report_{report_id or 'draft'}.md")
+
+
+@app.post("/api/reports/think-aloud/export/pdf")
+async def export_think_aloud_pdf(request: ThinkAloudReportRequest):
+    p = request.payload
+    report_id = _display_report_id(request.report_id)
+    generated_at = datetime.now(timezone.utc).isoformat()
+    try:
+        body = report_export.think_aloud_report_to_pdf(
+            p.report, p.segments, p.researcher_notes, p.task_outcome_note, report_id, generated_at)
+    except Exception:
+        report_logger.exception("Think-Aloud PDF export failed")
+        raise HTTPException(status_code=500, detail="Could not build the PDF export.")
+    return _download(body, "application/pdf", f"ZYNX_ThinkAloud_Report_{report_id or 'draft'}.pdf")
 
 
 if __name__ == "__main__":

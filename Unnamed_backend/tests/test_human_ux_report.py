@@ -367,5 +367,124 @@ class FullReportIntegrationTests(unittest.TestCase):
         self.assertEqual(report["score"]["dimensions"]["evidence_completeness"]["score"], 0)
 
 
+class TaskChecklistTests(unittest.TestCase):
+    """Task-completion checklist: purely informational, never affects the
+    score. A fixed score fixture is reused across every test in this class
+    to make that non-interference explicit and easy to verify."""
+
+    def _report(self, task_outcome, checklist):
+        seg = _seg("Mujhe laga tha pricing yahan hogi.", labels=["EXPECTATION"], start_ms=0, end_ms=1000)
+        return hur.build_human_ux_report(
+            "https://x.test", "Find pricing", {"persona_type": "novice"}, [seg],
+            1000.0, "en-IN", task_outcome, task_checklist=checklist,
+        )
+
+    def test_no_checklist_argument_is_fully_backward_compatible(self):
+        """Old callers that never pass task_checklist at all (every session
+        recorded before this feature existed) get task_checklist: None."""
+        seg = _seg("hi", labels=["EXPECTATION"], start_ms=0, end_ms=1000)
+        report = hur.build_human_ux_report("https://x.test", "t", {}, [seg], 1000.0, "en-IN", "completed")
+        self.assertIn("task_checklist", report)
+        self.assertIsNone(report["task_checklist"])
+
+    def test_none_checklist_explicit_is_backward_compatible(self):
+        report = self._report("completed", None)
+        self.assertIsNone(report["task_checklist"])
+
+    def test_empty_list_checklist_produces_warning_not_none(self):
+        """An explicitly-provided-but-empty list is different from "no
+        checklist at all" -- it means the researcher opened the checklist
+        UI but added nothing usable, which is worth flagging."""
+        report = self._report("completed", [])
+        self.assertIsNone(report["task_checklist"])  # falsy list == not provided, same as None
+
+    def test_completed_with_all_subgoals_checked_has_no_warning(self):
+        checklist = [{"label": "Find pricing page", "completed": True},
+                     {"label": "Understand plan differences", "completed": True}]
+        report = self._report("completed", checklist)
+        cs = report["task_checklist"]
+        self.assertEqual(cs["total"], 2)
+        self.assertEqual(cs["completed_count"], 2)
+        self.assertTrue(cs["all_completed"])
+        self.assertIsNone(cs["warning"])
+
+    def test_completed_with_partial_subgoals_checked_shows_warning(self):
+        checklist = [{"label": "Find pricing page", "completed": True},
+                     {"label": "Understand plan differences", "completed": False}]
+        report = self._report("completed", checklist)
+        cs = report["task_checklist"]
+        self.assertFalse(cs["all_completed"])
+        self.assertIsNotNone(cs["warning"])
+        self.assertIn("1 of 2", cs["warning"])
+
+    def test_not_completed_with_all_subgoals_checked_shows_contradiction_warning(self):
+        checklist = [{"label": "Find pricing page", "completed": True}]
+        report = self._report("not_completed", checklist)
+        cs = report["task_checklist"]
+        self.assertTrue(cs["all_completed"])
+        self.assertIsNotNone(cs["warning"])
+        self.assertIn("not completed", cs["warning"])
+
+    def test_not_completed_with_no_subgoals_checked_has_no_warning(self):
+        """Fully consistent: outcome says not completed, nothing is checked."""
+        checklist = [{"label": "Find pricing page", "completed": False}]
+        report = self._report("not_completed", checklist)
+        self.assertIsNone(report["task_checklist"]["warning"])
+
+    def test_partially_completed_outcome_never_triggers_a_warning(self):
+        """Only the 'completed' and 'not_completed' outcomes have a sharp
+        contradiction to detect; 'partially_completed' is consistent with
+        any mix of checked/unchecked subgoals by definition."""
+        checklist = [{"label": "A", "completed": True}, {"label": "B", "completed": False}]
+        report = self._report("partially_completed", checklist)
+        self.assertIsNone(report["task_checklist"]["warning"])
+
+    def test_not_assessed_outcome_never_triggers_a_warning(self):
+        checklist = [{"label": "A", "completed": True}, {"label": "B", "completed": False}]
+        report = self._report("not_assessed", checklist)
+        self.assertIsNone(report["task_checklist"]["warning"])
+        self.assertEqual(report["task_outcome"], "not_assessed")  # preserved exactly
+
+    def test_malformed_entries_are_dropped_not_guessed(self):
+        checklist = [
+            {"label": "Valid item", "completed": True},
+            {"label": "", "completed": True},          # empty label -- dropped
+            {"label": "   ", "completed": True},        # whitespace-only -- dropped
+            {"completed": True},                        # no label key at all -- dropped
+            "not even a dict",                           # wrong type -- dropped
+            {"label": "No completed key"},               # missing completed -- defaults False, not fabricated True
+        ]
+        report = self._report("completed", checklist)
+        cs = report["task_checklist"]
+        self.assertEqual(cs["total"], 2)
+        labels = [i["label"] for i in cs["items"]]
+        self.assertIn("Valid item", labels)
+        self.assertIn("No completed key", labels)
+        no_completed_item = next(i for i in cs["items"] if i["label"] == "No completed key")
+        self.assertFalse(no_completed_item["completed"])
+
+    def test_checklist_with_only_malformed_entries_warns_no_valid_entries(self):
+        report = self._report("completed", [{"label": ""}, "garbage"])
+        cs = report["task_checklist"]
+        self.assertEqual(cs["total"], 0)
+        self.assertIn("no valid subgoal entries", cs["warning"])
+
+    def test_checklist_never_changes_the_score(self):
+        """The score must be byte-identical whether or not a checklist (with
+        any content) is supplied, for the exact same segments/outcome."""
+        without = self._report("completed", None)
+        with_all_checked = self._report("completed", [{"label": "A", "completed": True}])
+        with_partial = self._report("completed", [{"label": "A", "completed": False}])
+        self.assertEqual(without["score"], with_all_checked["score"])
+        self.assertEqual(without["score"], with_partial["score"])
+
+    def test_completed_bool_coercion_never_defaults_to_true(self):
+        """Anything other than an explicit true-ish value is treated as NOT
+        completed -- completion is never assumed by default."""
+        checklist = [{"label": "A"}, {"label": "B", "completed": None}, {"label": "C", "completed": 0}]
+        report = self._report("completed", checklist)
+        self.assertEqual(report["task_checklist"]["completed_count"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()
